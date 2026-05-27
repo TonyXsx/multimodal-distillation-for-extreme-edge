@@ -1,0 +1,30 @@
+# Data (too large for git)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# HuggingFace model cache
+.cache/
+
+# Outputs / checkpoints
+outputs/
+checkpoints/
+runs/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
