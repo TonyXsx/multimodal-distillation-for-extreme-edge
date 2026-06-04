@@ -17,10 +17,13 @@ Each ResDS-SE block (per README):
 A 1x1 conv matches the residual path when channels/stride differ.
 
 Design note: the README lists the block internals but not inter-block
-downsampling. Stride-2 is applied in the stem and in each block's first
-depthwise conv (standard for efficient audio CNNs, e.g. BC-ResNet) so that
-activation memory is feasible on a 6 GB GPU. This does not change the
-parameter count (~0.37M), which stays in the README's 0.35-0.45M target.
+downsampling. Downsampling is applied in the stem and in each block's first
+depthwise conv (standard for efficient audio CNNs, e.g. BC-ResNet). The stem
+and blocks 1-2 use stride (2,2); blocks 3-4 use stride (2,1) so the FREQUENCY
+axis is kept at 8 bins (not collapsed to 2) — gentler frequency downsampling
+that markedly improves speaker-independent generalization. The 64-dim
+bottleneck and projection head are BatchNorm-normalized for stable training.
+Parameter count stays ~0.38M (README's 0.35-0.45M target).
 """
 
 import torch
@@ -82,24 +85,28 @@ class ResDSSEBlock(nn.Module):
 
 
 class DSResNetSE(nn.Module):
-    def __init__(self, n_mels=64, n_classes=31, proj_dim=64, dropout=0.1, se_r=8):
+    def __init__(self, n_mels=64, n_classes=31, proj_dim=64, dropout=0.2, se_r=8):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv2d(1, 32, 3, stride=2, padding=1, bias=False),
+            nn.Conv2d(1, 32, 3, stride=(2, 2), padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
         )
-        self.block1 = ResDSSEBlock(32, 64, stride=2, r=se_r)
-        self.block2 = ResDSSEBlock(64, 128, stride=2, r=se_r)
-        self.block3 = ResDSSEBlock(128, 192, stride=2, r=se_r)
-        self.block4 = ResDSSEBlock(192, 256, stride=2, r=se_r)
+        # Gentler frequency downsampling: blocks 3-4 use stride (2,1) so the
+        # frequency axis stays at 8 bins (not 2) -> better generalization.
+        self.block1 = ResDSSEBlock(32, 64, stride=(2, 2), r=se_r)
+        self.block2 = ResDSSEBlock(64, 128, stride=(2, 2), r=se_r)
+        self.block3 = ResDSSEBlock(128, 192, stride=(2, 1), r=se_r)
+        self.block4 = ResDSSEBlock(192, 256, stride=(2, 1), r=se_r)
 
         self.proj = nn.Sequential(
             nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(128, proj_dim),
         )
+        self.bottleneck_norm = nn.BatchNorm1d(proj_dim)   # normalize 64-dim bottleneck
         self.classifier = nn.Linear(proj_dim, n_classes)
 
     def forward(self, x):
@@ -109,9 +116,9 @@ class DSResNetSE(nn.Module):
         x = self.block2(x)
         x = self.block3(x)
         x = self.block4(x)
-        x = x.mean(dim=(2, 3))          # global average pooling -> [B, 256]
-        z = self.proj(x)                # student bottleneck -> [B, proj_dim]
-        logits = self.classifier(z)     # [B, n_classes]
+        x = x.mean(dim=(2, 3))                      # global average pooling -> [B, 256]
+        z = self.bottleneck_norm(self.proj(x))     # normalized bottleneck -> [B, proj_dim]
+        logits = self.classifier(z)                # [B, n_classes]
         return z, logits
 
 

@@ -59,11 +59,15 @@ for d in (CKPT_DIR, OUT_PLOT):
     d.mkdir(parents=True, exist_ok=True)
 
 # ── Hyperparameters ──────────────────────────────────────────────────────────────
-EPOCHS      = 60
+# Matches the strong CE-only baseline (baseline.py 'arch_reg', val ~0.884):
+# SpecAugment + label smoothing are part of the shared training setup, applied
+# identically to all four ablations so the only variable is the KD loss.
+EPOCHS      = 70
 LR          = 1e-3
 WEIGHT_DECAY = 1e-4
 BATCH_SIZE  = 256
-DROPOUT     = 0.1
+DROPOUT     = 0.2
+LABEL_SMOOTH = 0.1
 SEED        = 42
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -136,6 +140,23 @@ def kd_feature_loss(student_z, teacher_z):
     return 1.0 - F.cosine_similarity(student_z, teacher_z, dim=1).mean()
 
 
+def spec_augment(x, n_freq=2, n_time=2, f_max=12, t_max=40):
+    """Per-batch time/freq masking (training only). x: [B,1,T,F] normalized log-mel."""
+    B, _, T, F_ = x.shape
+    x = x.clone()
+    for _ in range(n_freq):
+        f = int(torch.randint(0, f_max + 1, (1,)))
+        if f > 0:
+            f0 = int(torch.randint(0, max(1, F_ - f), (1,)))
+            x[:, :, :, f0:f0 + f] = 0.0
+    for _ in range(n_time):
+        t = int(torch.randint(0, t_max + 1, (1,)))
+        if t > 0:
+            t0 = int(torch.randint(0, max(1, T - t), (1,)))
+            x[:, :, t0:t0 + t, :] = 0.0
+    return x
+
+
 # ── Eval ──────────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def evaluate(model, X, y):
@@ -165,7 +186,7 @@ def train_experiment(exp, train_data, val_data):
     model = DSResNetSE(dropout=DROPOUT).to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
-    ce = nn.CrossEntropyLoss()
+    ce = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTH)
 
     n = Xtr.shape[0]
     best_f1, best_state, best_metrics, best_epoch = -1.0, None, None, -1
@@ -177,7 +198,7 @@ def train_experiment(exp, train_data, val_data):
         running = 0.0
         for i in range(0, n, BATCH_SIZE):
             idx = perm[i:i + BATCH_SIZE]
-            xb = Xtr[idx].to(DEVICE)
+            xb = spec_augment(Xtr[idx].to(DEVICE))
             yb = ytr[idx].to(DEVICE)
             opt.zero_grad()
             z_s, logits_s = model(xb)
@@ -277,7 +298,7 @@ def make_plot(results):
     ax.set_xticklabels(exps, fontsize=10)
     ax.set_ylim(lo, hi)
     ax.set_ylabel("Score (FSC validation, 31 classes)")
-    ax.set_title("Student KD Ablation — DSResNet-SE (379K params, FP32 1.45 MB)\n"
+    ax.set_title("Student KD Ablation — DSResNet-SE (379K params, FP32 1.45 MB) + SpecAugment + label-smooth\n"
                  "audio-only student  ·  teacher = Qwen2.5-Omni-3B B2 bottleneck(64) + logits  "
                  "·  (y-axis zoomed)", fontsize=10)
     ax.legend(fontsize=9, loc="lower right")
