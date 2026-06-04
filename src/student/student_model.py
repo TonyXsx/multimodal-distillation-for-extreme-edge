@@ -85,27 +85,43 @@ class ResDSSEBlock(nn.Module):
 
 
 class DSResNetSE(nn.Module):
-    def __init__(self, n_mels=64, n_classes=31, proj_dim=64, dropout=0.2, se_r=8):
+    """Parametrized by channel schedule so the same class serves both the strong
+    student (default) and a smaller capacity-limited variant.
+
+    channels    : (stem_out, b1, b2, b3, b4) output channels.
+    proj_hidden : hidden dim of the projection head; None -> project c4 -> proj_dim
+                  directly (used by the small student, head = 128 -> 64).
+    The 64-dim proj_dim is fixed across variants so the Feature-KD target
+    dimension (teacher bottleneck = 64) stays matched.
+    """
+
+    def __init__(self, n_mels=64, n_classes=31, channels=(32, 64, 128, 192, 256),
+                 proj_hidden=128, proj_dim=64, dropout=0.2, se_r=8):
         super().__init__()
+        c0, c1, c2, c3, c4 = channels
         self.stem = nn.Sequential(
-            nn.Conv2d(1, 32, 3, stride=(2, 2), padding=1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(1, c0, 3, stride=(2, 2), padding=1, bias=False),
+            nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
         )
         # Gentler frequency downsampling: blocks 3-4 use stride (2,1) so the
         # frequency axis stays at 8 bins (not 2) -> better generalization.
-        self.block1 = ResDSSEBlock(32, 64, stride=(2, 2), r=se_r)
-        self.block2 = ResDSSEBlock(64, 128, stride=(2, 2), r=se_r)
-        self.block3 = ResDSSEBlock(128, 192, stride=(2, 1), r=se_r)
-        self.block4 = ResDSSEBlock(192, 256, stride=(2, 1), r=se_r)
+        self.block1 = ResDSSEBlock(c0, c1, stride=(2, 2), r=se_r)
+        self.block2 = ResDSSEBlock(c1, c2, stride=(2, 2), r=se_r)
+        self.block3 = ResDSSEBlock(c2, c3, stride=(2, 1), r=se_r)
+        self.block4 = ResDSSEBlock(c3, c4, stride=(2, 1), r=se_r)
 
-        self.proj = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(128, proj_dim),
-        )
+        if proj_hidden:
+            self.proj = nn.Sequential(
+                nn.Linear(c4, proj_hidden),
+                nn.BatchNorm1d(proj_hidden),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+                nn.Linear(proj_hidden, proj_dim),
+            )
+        else:
+            self.proj = nn.Linear(c4, proj_dim)           # direct head, e.g. 128 -> 64
+
         self.bottleneck_norm = nn.BatchNorm1d(proj_dim)   # normalize 64-dim bottleneck
         self.classifier = nn.Linear(proj_dim, n_classes)
 
@@ -116,7 +132,7 @@ class DSResNetSE(nn.Module):
         x = self.block2(x)
         x = self.block3(x)
         x = self.block4(x)
-        x = x.mean(dim=(2, 3))                      # global average pooling -> [B, 256]
+        x = x.mean(dim=(2, 3))                      # global average pooling -> [B, c4]
         z = self.bottleneck_norm(self.proj(x))     # normalized bottleneck -> [B, proj_dim]
         logits = self.classifier(z)                # [B, n_classes]
         return z, logits
@@ -131,12 +147,10 @@ def model_summary(model):
 
 
 if __name__ == "__main__":
-    m = DSResNetSE()
-    s = model_summary(m)
-    print(f"Trainable params : {s['params']:,}")
-    print(f"FP32 size        : {s['fp32_mb']:.2f} MB")
-    print(f"FP16 size        : {s['fp16_mb']:.2f} MB")
-    print(f"INT8 (est) size  : {s['int8_mb']:.2f} MB")
-    x = torch.randn(2, 1, 301, 64)
-    z, logits = m(x)
-    print(f"input  {tuple(x.shape)} -> z {tuple(z.shape)}  logits {tuple(logits.shape)}")
+    for name, kw in [("STRONG (default)", {}),
+                     ("SMALL", {"channels": (16, 32, 64, 96, 128), "proj_hidden": None})]:
+        m = DSResNetSE(**kw)
+        s = model_summary(m)
+        z, logits = m(torch.randn(2, 1, 301, 64))
+        print(f"[{name}] params {s['params']:,}  FP32 {s['fp32_mb']:.2f} MB  "
+              f"INT8(est) {s['int8_mb']:.2f} MB  -> z {tuple(z.shape)} logits {tuple(logits.shape)}")

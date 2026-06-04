@@ -27,7 +27,18 @@ Macro F1
 Weighted F1
 ```
 
-The two new settings below should use the same evaluation metrics and the same validation set.
+The "strong student" recipe is not just the architecture/channels below — it also
+includes the training regularization that produced the 88% baseline:
+
+```text
+- gentler frequency downsampling (blocks 3-4 stride (2,1), freq kept at 8 bins)
+- BatchNorm on the projection head and the 64-dim bottleneck
+- SpecAugment (time/freq masking) + label smoothing 0.1
+- 70 epochs, AdamW(lr=1e-3, wd=1e-4), cosine schedule, dropout 0.2
+```
+
+The two new settings below should use the same evaluation metrics and the same
+validation set, and the same training recipe (only the studied variable changes).
 
 ---
 
@@ -62,6 +73,11 @@ Keep the original validation set unchanged.
 Do not sample from the validation set.
 Use the same teacher logits and teacher bottleneck features.
 ```
+
+Because 20% of the data (~4.6k samples) makes results sensitive to which subset
+is drawn, run this setting with 3 different seeds (each seed = a different
+stratified 20% subset + different init) and report mean +/- std per method.
+This separates a real KD effect from sampling luck.
 
 ### Methods to Run
 
@@ -108,7 +124,7 @@ New small student:
 
 ```text
 channels = [16, 32, 64, 96, 128]
-projection = 128 -> 64 -> 64
+projection = 128 -> 64
 classifier = 64 -> 31
 ```
 
@@ -168,6 +184,8 @@ Each table should contain:
 ```text
 Method | Val Acc | Macro F1 | Weighted F1
 ```
+
+Table 2 (20% data) reports mean +/- std over the 3 seeds.
 
 Methods in each table:
 
