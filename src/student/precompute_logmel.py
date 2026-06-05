@@ -16,7 +16,12 @@ Output:
     data/student/logmel_cache/
         train_logmel.pt   { logmel:[N,1,T,64] fp16, labels, sample_ids, mean[64], std[64] }
         val_logmel.pt     { logmel:[N,1,T,64] fp16, labels, sample_ids }
+        test_logmel.pt    { logmel:[N,1,T,64] fp16, labels, sample_ids }
         config.json
+
+Splits whose cache file already exists are skipped (idempotent), so adding the
+test split does not recompute train/val. test is for final eval only — the
+student is audio-only, so no teacher signal is needed for test.
 """
 
 import io
@@ -92,29 +97,37 @@ def process(ds):
     return X, torch.tensor(labels, dtype=torch.long), ids, n_trunc
 
 
+# (hf_split, output filename, save train normalization stats)
+SPLITS = [("train", "train_logmel.pt", True),
+          ("validation", "val_logmel.pt", False),
+          ("test", "test_logmel.pt", False)]
+
+
 def main():
     fsc, label2id = load_fsc()
 
-    print("\n=== TRAIN ===")
-    Xtr, ytr, idtr, tr_trunc = process(fsc["train"])
-    print("=== VAL ===")
-    Xva, yva, idva, va_trunc = process(fsc["validation"])
-    print(f"\nshapes: train {tuple(Xtr.shape)}  val {tuple(Xva.shape)}")
-    print(f"truncated (> {MAX_SECONDS}s): train {tr_trunc}  val {va_trunc}")
-
-    # Per-bin normalization stats from TRAIN only (applied at train time).
-    mean = Xtr.mean(dim=(0, 1, 2))                        # [64]
-    std  = Xtr.std(dim=(0, 1, 2)).clamp_min(1e-6)         # [64]
-
-    torch.save({"logmel": Xtr.to(torch.float16), "labels": ytr, "sample_ids": idtr,
-                "mean": mean, "std": std}, OUT_DIR / "train_logmel.pt")
-    torch.save({"logmel": Xva.to(torch.float16), "labels": yva, "sample_ids": idva},
-               OUT_DIR / "val_logmel.pt")
+    n_frames = None
+    for hf_split, fname, save_stats in SPLITS:
+        out_path = OUT_DIR / fname
+        if out_path.exists():
+            print(f"exists, skip: {fname}")
+            continue
+        print(f"\n=== {hf_split} ===")
+        X, y, ids, trunc = process(fsc[hf_split])
+        n_frames = int(X.shape[2])
+        print(f"{hf_split}: {tuple(X.shape)}  truncated(> {MAX_SECONDS}s)={trunc}")
+        payload = {"logmel": X.to(torch.float16), "labels": y, "sample_ids": ids}
+        if save_stats:  # train only: per-bin normalization stats, applied to all splits at train/eval time
+            payload["mean"] = X.mean(dim=(0, 1, 2))
+            payload["std"] = X.std(dim=(0, 1, 2)).clamp_min(1e-6)
+        torch.save(payload, out_path)
+        print(f"saved -> {out_path}")
 
     cfg = {"sr": SR, "n_fft": N_FFT, "hop": HOP, "n_mels": N_MELS, "fmax": FMAX,
            "max_seconds": MAX_SECONDS, "target_len": TARGET_LEN,
-           "n_frames": int(Xtr.shape[2]), "train_n": int(Xtr.shape[0]),
-           "val_n": int(Xva.shape[0]), "normalization": "per-bin, train mean/std"}
+           "n_frames": n_frames if n_frames is not None else TARGET_LEN // HOP + 1,
+           "train_n": len(fsc["train"]), "val_n": len(fsc["validation"]),
+           "test_n": len(fsc["test"]), "normalization": "per-bin, train mean/std"}
     with open(OUT_DIR / "config.json", "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
