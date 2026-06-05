@@ -40,9 +40,9 @@ import torch.nn as nn
 PROJECT = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
 sys.path.insert(0, str(PROJECT / "src" / "student"))
 from student_model import DSResNetSE, model_summary           # noqa: E402
-from train_student import (                                   # noqa: E402
+from kd_common import (                                       # noqa: E402
     load_data, evaluate, spec_augment, kd_logit_loss, kd_feature_loss,
-    EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, LABEL_SMOOTH, DEVICE,
+    stratified_indices, EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, LABEL_SMOOTH, DEVICE,
 )
 
 OUT = PROJECT / "outputs" / "student" / "kd_2x2_tuned"
@@ -80,17 +80,6 @@ SETTINGS = [
     ("small_100",  small_factory,  1.00),
     ("small_20",   small_factory,  0.20),
 ]
-
-
-def stratified_indices(labels, frac, seed):
-    rng = np.random.RandomState(seed)
-    y = labels.numpy()
-    idx = []
-    for c in np.unique(y):
-        c_idx = np.where(y == c)[0]
-        k = max(1, int(round(len(c_idx) * frac)))
-        idx.extend(rng.choice(c_idx, size=k, replace=False))
-    return np.sort(np.array(idx))
 
 
 def run(model_factory, train_data, val_data, lam_logit, lam_feature, seed, frac):

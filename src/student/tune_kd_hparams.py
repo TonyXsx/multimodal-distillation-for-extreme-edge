@@ -5,17 +5,20 @@ so an optimum is actually detectable here (unlike strong+100% where KD ~= 0).
 
 Selection is on val (dev set); FSC test stays untouched for the final report.
 
-Search (per the agreed design):
+Search:
   1. CE-only                                              (anchor)
   2. Logit-KD: T in {2,4,8} at lam_logit=0.5  -> pick best T
               then best T at lam_logit in {0.1, 1.0}      -> pick best lam_logit (vs 0.5)
   3. Feature-KD: lam_feature in {0.3, 1.0, 3.0}           -> pick best lam_feature
   4. Full-KD: (best T, best lam_logit, best lam_feature)
               optional: (best T, lam_logit=0.1, best lam_feature)
+  5. Boundary probes (optima landed at grid edges): T=16 @lam_logit=0.5, and
+     best_T @lam_logit=3.0 — recorded but NOT fed into selection, just to confirm
+     whether performance is still climbing or has plateaued.
 
-Results are written by code to:
-  outputs/student/kd_hparam_sweep.csv          (source of truth)
-  outputs/student/kd_hparam_sweep.png          (human-readable)
+Results written by code to (source of truth = results.csv):
+  outputs/student/hparam_sweep/results.csv
+  outputs/student/hparam_sweep/sweep.png
 """
 
 import csv
@@ -32,12 +35,12 @@ import torch.nn as nn
 PROJECT = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
 sys.path.insert(0, str(PROJECT / "src" / "student"))
 from student_model import DSResNetSE, model_summary           # noqa: E402
-from train_student import (                                   # noqa: E402
+from kd_common import (                                       # noqa: E402
     load_data, evaluate, spec_augment, kd_logit_loss, kd_feature_loss,
     EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, LABEL_SMOOTH, SEED, DEVICE,
 )
 
-OUT = PROJECT / "outputs" / "student"
+OUT = PROJECT / "outputs" / "student" / "hparam_sweep"
 OUT.mkdir(parents=True, exist_ok=True)
 
 SMALL_KW = {"channels": (16, 32, 64, 96, 128), "proj_hidden": None}
@@ -139,15 +142,22 @@ def main():
         record("full_kd_optional", f"full_T{best_T:g}_ll0.1_lf{best_lf:g}", best_T, 0.1, best_lf,
                run(train_data, val_data, t=best_T, lam_logit=0.1, lam_feature=best_lf))
 
-    # ── write CSV (source of truth) ───────────────────────────────────────────────
-    csv_path = OUT / "kd_hparam_sweep.csv"
+    # 5. Boundary probes (optima at grid edges) — recorded, NOT fed into selection.
+    print("\n# 5. Boundary probes (one step past the grid edges)")
+    record("logit_T_sweep", "T16_ll0.5", 16.0, 0.5, 0.0,
+           run(train_data, val_data, t=16.0, lam_logit=0.5, lam_feature=0.0))
+    record("logit_ll_sweep", f"T{best_T:g}_ll3", best_T, 3.0, 0.0,
+           run(train_data, val_data, t=best_T, lam_logit=3.0, lam_feature=0.0))
+
+    # ── write results CSV (source of truth) ───────────────────────────────────────
+    csv_path = OUT / "results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["stage", "name", "T", "lam_logit", "lam_feature",
                                           "val_acc", "macro_f1", "weighted_f1"])
         w.writeheader(); w.writerows(rows)
     print(f"\nResults CSV -> {csv_path}")
 
-    print("\n=== Selected hyperparameters (by val macro-F1) ===")
+    print("\n=== Selected hyperparameters (by val macro-F1, from the in-grid sweep) ===")
     print(f"  best T          = {best_T:g}")
     print(f"  best lam_logit  = {best_ll:g}")
     print(f"  best lam_feature= {best_lf:g}")
@@ -175,11 +185,11 @@ def make_plot(rows, ce_f1):
     ax.set_ylim(lo, hi)
     ax.set_ylabel("Val Macro F1 (FSC, 31 classes)")
     ax.set_title("KD hyperparameter sweep — SMALL student + 100% data (single seed, val selection)\n"
-                 "greedy: T@λ_logit=0.5 → λ_logit@bestT → λ_feature; then Full-KD", fontsize=10)
+                 "greedy: T@λ_logit=0.5 → λ_logit@bestT → λ_feature; then Full-KD; + boundary probes", fontsize=10)
     ax.legend(fontsize=9, loc="lower right"); ax.grid(axis="y", alpha=0.3)
-    fig.savefig(OUT / "kd_hparam_sweep.png", dpi=150, bbox_inches="tight")
+    fig.savefig(OUT / "sweep.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Plot        -> {OUT / 'kd_hparam_sweep.png'}")
+    print(f"Plot        -> {OUT / 'sweep.png'}")
 
 
 if __name__ == "__main__":

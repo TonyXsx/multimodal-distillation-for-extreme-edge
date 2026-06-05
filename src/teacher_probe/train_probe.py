@@ -26,7 +26,7 @@ MLP block = Linear -> LayerNorm -> GELU -> Dropout(0.1); final Linear(d, 31).
 Outputs:
   data/teacher_probe/<feat>/checkpoints/<ID>_<arch>.pt    (state_dict + standardizer + cfg)
   data/teacher_probe/<feat>/bottleneck_reps/<ID>_bottleneck<d>.pt   (B* only; train+val embeddings)
-  data/teacher_probe/<feat>/results.csv
+  outputs/teacher_probe/results.csv
   outputs/teacher_probe/probe_comparison.png
   outputs/teacher_probe/results.md
 """
@@ -203,7 +203,7 @@ def main():
         })
 
     # ── Save results CSV ─────────────────────────────────────────────────────────
-    csv_path = OUT_DATA / "results.csv"
+    csv_path = OUT_PLOT / "results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["id", "arch", "bottleneck",
                                           "eval_acc", "eval_macro_f1", "train_acc"])

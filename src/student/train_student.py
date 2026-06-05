@@ -1,31 +1,21 @@
 """
-Student KD ablation: same DSResNet-SE, four training losses.
-
-The key question is NOT architecture comparison but whether distilling the
-Qwen2.5-Omni teacher (64-dim bottleneck + logits) improves the same compact
-audio-only student:
+Student KD ablation: same DSResNet-SE, four training losses (strong student,
+100% data, single seed, ORIGINAL untuned KD defaults T=2 / lam_logit=0.5).
 
     CE-only   :  L_ce
     Logit-KD  :  L_ce + lam_logit * L_logit
     Feature-KD:  L_ce + lam_feature * L_feature
     Full-KD   :  L_ce + lam_logit * L_logit + lam_feature * L_feature
 
-Teacher signals are produced from the chosen B2 probe (2048->64->31):
-  - teacher_z_64   = B2 bottleneck activation
-  - teacher_logits = B2 classifier logits
-computed on the cached teacher features (FSC order), aligned to the student
-log-mel cache by file id.
-
-Inputs:
-  data/student/logmel_cache/{train,val}_logmel.pt          (precompute_logmel.py)
-  data/teacher_features/<feat>/{train,val}_features.pt      (full_feature_extraction.py)
-  data/teacher_probe/<feat>/checkpoints/B2_*.pt            (train_probe.py)
+Shared infra (data, teacher signals, losses, SpecAugment, evaluation, constants)
+lives in kd_common.py. The definitive multi-seed, tuned-HP study is
+train_student_2x2.py; KD-HP tuning is tune_kd_hparams.py.
 
 Outputs:
-  data/student/checkpoints/<exp>_best.pt
-  data/student/results.csv
-  outputs/student/student_kd_ablation.png
-  outputs/student/results.md
+  data/student/checkpoints/<exp>_best.pt          (model artifacts)
+  outputs/student/main_ablation/results.csv       (source of truth)
+  outputs/student/main_ablation/results.md
+  outputs/student/main_ablation/student_kd_ablation.png
 """
 
 import csv
@@ -38,40 +28,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, f1_score
 
 PROJECT = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
 sys.path.insert(0, str(PROJECT / "src" / "student"))
-sys.path.insert(0, str(PROJECT / "src" / "teacher_probe"))
 from student_model import DSResNetSE, model_summary   # noqa: E402
-from train_probe import Probe                          # noqa: E402  (teacher probe class)
+from kd_common import (                               # noqa: E402
+    DATA, load_data, evaluate, spec_augment, kd_logit_loss, kd_feature_loss,
+    EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, DROPOUT, LABEL_SMOOTH, SEED, DEVICE,
+)
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-DATA     = PROJECT / "data"
-LOGMEL   = DATA / "student" / "logmel_cache"
-FEAT_TAG = "fsc_full__qwen2.5-omni-3b-4bit__pf_audiomean_L24-27-30-34"
-FEAT_DIR = DATA / "teacher_features" / FEAT_TAG
-PROBE_CKPT_DIR = DATA / "teacher_probe" / FEAT_TAG / "checkpoints"
+# ── Output paths ──────────────────────────────────────────────────────────────────
 CKPT_DIR = DATA / "student" / "checkpoints"
-OUT_PLOT = PROJECT / "outputs" / "student"
-for d in (CKPT_DIR, OUT_PLOT):
+OUT      = PROJECT / "outputs" / "student" / "main_ablation"
+for d in (CKPT_DIR, OUT):
     d.mkdir(parents=True, exist_ok=True)
 
-# ── Hyperparameters ──────────────────────────────────────────────────────────────
-# Matches the strong CE-only baseline (baseline.py 'arch_reg', val ~0.884):
-# SpecAugment + label smoothing are part of the shared training setup, applied
-# identically to all four ablations so the only variable is the KD loss.
-EPOCHS      = 70
-LR          = 1e-3
-WEIGHT_DECAY = 1e-4
-BATCH_SIZE  = 256
-DROPOUT     = 0.2
-LABEL_SMOOTH = 0.1
-SEED        = 42
-DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
-
-# KD defaults (README)
+# ── Experiment-specific KD hyperparameters (original untuned defaults) ─────────────
 T           = 2.0
 LAM_LOGIT   = 0.5
 LAM_FEATURE = 1.0
@@ -79,99 +51,6 @@ LAM_FEATURE = 1.0
 EXPERIMENTS = ["ce_only", "logit_kd", "feature_kd", "full_kd"]
 USE_LOGIT   = {"ce_only": False, "logit_kd": True,  "feature_kd": False, "full_kd": True}
 USE_FEATURE = {"ce_only": False, "logit_kd": False, "feature_kd": True,  "full_kd": True}
-
-
-# ── Teacher signals ──────────────────────────────────────────────────────────────
-def build_teacher_signals():
-    """Return dict split -> (z_64 [N,64], logits [N,31], sample_ids) from the B2 probe."""
-    ckpt_path = next(PROBE_CKPT_DIR.glob("B2_*.pt"))
-    ckpt = torch.load(ckpt_path, weights_only=False)
-    mean, std = ckpt["standardizer"]["mean"], ckpt["standardizer"]["std"]
-    feat_name = ckpt["feature_name"]
-
-    probe = Probe(2048, ckpt["hidden_dims"], ckpt["n_classes"], dropout=ckpt["dropout"])
-    probe.load_state_dict(ckpt["state_dict"])
-    probe.eval().to(DEVICE)
-
-    out = {}
-    for split, fname in [("train", "train_features.pt"), ("val", "val_features.pt")]:
-        d = torch.load(FEAT_DIR / fname, weights_only=False)
-        X = ((d["features"][feat_name].float() - mean) / std).to(DEVICE)
-        with torch.no_grad():
-            logits, z = probe(X, return_bottleneck=True)
-        out[split] = (z.cpu(), logits.cpu(), d["sample_ids"])
-    return out, ckpt_path.name
-
-
-# ── Data ──────────────────────────────────────────────────────────────────────
-def load_data():
-    tr = torch.load(LOGMEL / "train_logmel.pt", weights_only=False)
-    va = torch.load(LOGMEL / "val_logmel.pt",   weights_only=False)
-    mean = tr["mean"].view(1, 1, 1, -1)
-    std  = tr["std"].view(1, 1, 1, -1)
-
-    Xtr = (tr["logmel"].float() - mean) / std
-    Xva = (va["logmel"].float() - mean) / std
-    ytr, yva = tr["labels"].long(), va["labels"].long()
-
-    teacher, probe_name = build_teacher_signals()
-    ztr, ltr, idtr = teacher["train"]
-    zva, lva, idva = teacher["val"]
-
-    # Critical: teacher signals and student inputs must be the same samples, same order.
-    assert tr["sample_ids"] == idtr, "TRAIN sample_id mismatch (student vs teacher)"
-    assert va["sample_ids"] == idva, "VAL sample_id mismatch (student vs teacher)"
-
-    print(f"Teacher probe   : {probe_name}")
-    print(f"train {tuple(Xtr.shape)}  val {tuple(Xva.shape)}")
-    return (Xtr, ytr, ztr, ltr), (Xva, yva, zva, lva)
-
-
-# ── Losses ──────────────────────────────────────────────────────────────────────
-def kd_logit_loss(student_logits, teacher_logits, t=T):
-    return F.kl_div(
-        F.log_softmax(student_logits / t, dim=1),
-        F.softmax(teacher_logits / t, dim=1),
-        reduction="batchmean",
-    ) * (t * t)
-
-
-def kd_feature_loss(student_z, teacher_z):
-    return 1.0 - F.cosine_similarity(student_z, teacher_z, dim=1).mean()
-
-
-def spec_augment(x, n_freq=2, n_time=2, f_max=12, t_max=40):
-    """Per-batch time/freq masking (training only). x: [B,1,T,F] normalized log-mel."""
-    B, _, T, F_ = x.shape
-    x = x.clone()
-    for _ in range(n_freq):
-        f = int(torch.randint(0, f_max + 1, (1,)))
-        if f > 0:
-            f0 = int(torch.randint(0, max(1, F_ - f), (1,)))
-            x[:, :, :, f0:f0 + f] = 0.0
-    for _ in range(n_time):
-        t = int(torch.randint(0, t_max + 1, (1,)))
-        if t > 0:
-            t0 = int(torch.randint(0, max(1, T - t), (1,)))
-            x[:, :, t0:t0 + t, :] = 0.0
-    return x
-
-
-# ── Eval ──────────────────────────────────────────────────────────────────────
-@torch.no_grad()
-def evaluate(model, X, y):
-    model.eval()
-    preds = []
-    for i in range(0, X.shape[0], BATCH_SIZE):
-        _, logits = model(X[i:i + BATCH_SIZE].to(DEVICE))
-        preds.append(logits.argmax(1).cpu())
-    preds = torch.cat(preds).numpy()
-    yt = y.numpy()
-    return {
-        "acc": accuracy_score(yt, preds),
-        "macro_f1": f1_score(yt, preds, average="macro"),
-        "weighted_f1": f1_score(yt, preds, average="weighted"),
-    }
 
 
 # ── Train one experiment ──────────────────────────────────────────────────────────
@@ -204,7 +83,7 @@ def train_experiment(exp, train_data, val_data):
             z_s, logits_s = model(xb)
             loss = ce(logits_s, yb)
             if use_logit:
-                loss = loss + LAM_LOGIT * kd_logit_loss(logits_s, ltr[idx].to(DEVICE))
+                loss = loss + LAM_LOGIT * kd_logit_loss(logits_s, ltr[idx].to(DEVICE), T)
             if use_feature:
                 loss = loss + LAM_FEATURE * kd_feature_loss(z_s, ztr[idx].to(DEVICE).float())
             loss.backward()
@@ -224,7 +103,7 @@ def train_experiment(exp, train_data, val_data):
             print(f"    epoch {epoch+1:3d}/{EPOCHS}  loss={running/n:.4f}  "
                   f"val_acc={m['acc']:.4f}  macroF1={m['macro_f1']:.4f}")
 
-    # Save best-by-val-macroF1 checkpoint (README).
+    # Save best-by-val-macroF1 checkpoint.
     torch.save({"exp": exp, "state_dict": best_state, "best_epoch": best_epoch,
                 "metrics": best_metrics, "history": history},
                CKPT_DIR / f"{exp}_best.pt")
@@ -249,8 +128,8 @@ def main():
                         "params": sz["params"], "fp32_mb": round(sz["fp32_mb"], 2),
                         "int8_mb": round(sz["int8_mb"], 2)})
 
-    # ── results CSV + MD ─────────────────────────────────────────────────────────
-    csv_path = DATA / "student" / "results.csv"
+    # ── results CSV (source of truth) + MD ────────────────────────────────────────
+    csv_path = OUT / "results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["exp", "acc", "macro_f1", "weighted_f1",
                                           "params", "fp32_mb", "int8_mb"])
@@ -263,7 +142,7 @@ def main():
     for r in results:
         md.append(f"| {r['exp']} | {r['acc']:.4f} | {r['macro_f1']:.4f} | {r['weighted_f1']:.4f} "
                   f"| {r['params']:,} | {r['fp32_mb']} | {r['int8_mb']} |")
-    (OUT_PLOT / "results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (OUT / "results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print("\n" + "\n".join(md))
 
     make_plot(results)
@@ -289,7 +168,6 @@ def make_plot(results):
                     f"{b.get_height():.4f}", ha="center", va="top",
                     fontsize=8, rotation=90, color="white", fontweight="bold")
 
-    # CE-only reference line (the question: does KD beat it?)
     ce_acc = results[0]["acc"]
     ax.axhline(ce_acc, color="gray", linestyle=":", linewidth=1.3,
                label=f"CE-only acc ({ce_acc:.4f})")
@@ -304,7 +182,7 @@ def make_plot(results):
     ax.legend(fontsize=9, loc="lower right")
     ax.grid(axis="y", alpha=0.35)
 
-    plot_path = OUT_PLOT / "student_kd_ablation.png"
+    plot_path = OUT / "student_kd_ablation.png"
     fig.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Plot        -> {plot_path}")
