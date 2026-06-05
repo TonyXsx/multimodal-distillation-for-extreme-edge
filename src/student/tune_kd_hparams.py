@@ -7,14 +7,16 @@ Selection is on val (dev set); FSC test stays untouched for the final report.
 
 Search:
   1. CE-only                                              (anchor)
-  2. Logit-KD: T in {2,4,8} at lam_logit=0.5  -> pick best T
+  2. Logit-KD: T in {2,4,8} at lam_logit=0.5  -> pick best T  (+ boundary probe T=16,
+              recorded right after T8 but excluded from selection)
               then best T at lam_logit in {0.1, 1.0}      -> pick best lam_logit (vs 0.5)
+              (+ boundary probe lam_logit=3.0, recorded after ll0.1, excluded from selection)
   3. Feature-KD: lam_feature in {0.3, 1.0, 3.0}           -> pick best lam_feature
   4. Full-KD: (best T, best lam_logit, best lam_feature)
               optional: (best T, lam_logit=0.1, best lam_feature)
-  5. Boundary probes (optima landed at grid edges): T=16 @lam_logit=0.5, and
-     best_T @lam_logit=3.0 — recorded but NOT fed into selection, just to confirm
-     whether performance is still climbing or has plateaued.
+
+Boundary probes sit inline in their sweep group (so the CSV/plot read in sweep
+order) but are kept out of the argmax so selection stays over the original grid.
 
 Results written by code to (source of truth = results.csv):
   outputs/student/hparam_sweep/results.csv
@@ -114,16 +116,23 @@ def main():
         logit_T[T] = record("logit_T_sweep", f"T{T:g}_ll0.5", T, 0.5, 0.0,
                             run(train_data, val_data, t=T, lam_logit=0.5, lam_feature=0.0))
     best_T = max(logit_T, key=lambda k: logit_T[k]["macro_f1"])
-    print(f"  -> best T = {best_T:g}")
+    print(f"  -> best T = {best_T:g} (selection over {{2,4,8}})")
+    # boundary probe one step past the T grid: recorded right after T8, NOT in selection
+    record("logit_T_sweep", "T16_ll0.5", 16.0, 0.5, 0.0,
+           run(train_data, val_data, t=16.0, lam_logit=0.5, lam_feature=0.0))
 
     # 2b. Logit-KD: lam_logit sweep at best T (0.5 already known from 2a)
     print(f"\n# 2b. Logit-KD lam_logit sweep (T={best_T:g})")
     logit_ll = {0.5: logit_T[best_T]}
-    for ll in (0.1, 1.0):
-        logit_ll[ll] = record("logit_ll_sweep", f"T{best_T:g}_ll{ll:g}", best_T, ll, 0.0,
-                              run(train_data, val_data, t=best_T, lam_logit=ll, lam_feature=0.0))
+    logit_ll[0.1] = record("logit_ll_sweep", f"T{best_T:g}_ll0.1", best_T, 0.1, 0.0,
+                           run(train_data, val_data, t=best_T, lam_logit=0.1, lam_feature=0.0))
+    # boundary probe one step past the lam_logit grid: after ll0.1, NOT in selection
+    record("logit_ll_sweep", f"T{best_T:g}_ll3", best_T, 3.0, 0.0,
+           run(train_data, val_data, t=best_T, lam_logit=3.0, lam_feature=0.0))
+    logit_ll[1.0] = record("logit_ll_sweep", f"T{best_T:g}_ll1", best_T, 1.0, 0.0,
+                           run(train_data, val_data, t=best_T, lam_logit=1.0, lam_feature=0.0))
     best_ll = max(logit_ll, key=lambda k: logit_ll[k]["macro_f1"])
-    print(f"  -> best lam_logit = {best_ll:g}")
+    print(f"  -> best lam_logit = {best_ll:g} (selection over {{0.1,0.5,1.0}})")
 
     # 3. Feature-KD: lam_feature sweep
     print("\n# 3. Feature-KD lam_feature sweep")
@@ -141,13 +150,6 @@ def main():
     if best_ll != 0.1:
         record("full_kd_optional", f"full_T{best_T:g}_ll0.1_lf{best_lf:g}", best_T, 0.1, best_lf,
                run(train_data, val_data, t=best_T, lam_logit=0.1, lam_feature=best_lf))
-
-    # 5. Boundary probes (optima at grid edges) — recorded, NOT fed into selection.
-    print("\n# 5. Boundary probes (one step past the grid edges)")
-    record("logit_T_sweep", "T16_ll0.5", 16.0, 0.5, 0.0,
-           run(train_data, val_data, t=16.0, lam_logit=0.5, lam_feature=0.0))
-    record("logit_ll_sweep", f"T{best_T:g}_ll3", best_T, 3.0, 0.0,
-           run(train_data, val_data, t=best_T, lam_logit=3.0, lam_feature=0.0))
 
     # ── write results CSV (source of truth) ───────────────────────────────────────
     csv_path = OUT / "results.csv"
