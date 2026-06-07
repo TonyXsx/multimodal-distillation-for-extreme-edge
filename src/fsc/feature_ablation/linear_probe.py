@@ -29,9 +29,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT  = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
-FEAT_DIR = PROJECT / "data" / "teacher_features" / "fsc_small_ablation__qwen2.5-omni-3b-4bit"
-OUT_DIR  = PROJECT / "outputs" / "feature_ablation" / "linear_probe"
+import sys
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.config import DATA_ROOT, OUTPUTS_ROOT   # noqa: E402
+
+FEAT_DIR = DATA_ROOT / "teacher_features" / "fsc_small_ablation__qwen2.5-omni-3b-4bit"
+OUT_DIR  = OUTPUTS_ROOT / "fsc" / "feature_ablation" / "linear_probe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 LLM_LAYERS = [9, 18, 24, 27, 30, 34, 36]

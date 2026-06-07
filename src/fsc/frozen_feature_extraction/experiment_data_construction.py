@@ -22,7 +22,12 @@ from pathlib import Path
 from datasets import Audio, load_dataset
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-DATA_ROOT = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge\data")
+import sys
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.config import DATA_ROOT   # noqa: E402
+
 SAVE_DIR  = DATA_ROOT / "fsc_small_ablation"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 

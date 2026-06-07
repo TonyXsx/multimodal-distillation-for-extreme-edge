@@ -42,16 +42,23 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import f1_score
 
+# ── make src importable (file-relative, no hardcoded drive) ──────────────────────
+import sys
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.config import DATA_ROOT, OUTPUTS_ROOT   # noqa: E402
+from common.probe import Probe                      # noqa: E402
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT  = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
 FEAT_TAG = "fsc_full__qwen2.5-omni-3b-4bit__pf_audiomean_L24-27-30-34"
-FEAT_DIR = PROJECT / "data" / "teacher_features" / FEAT_TAG
+FEAT_DIR = DATA_ROOT / "teacher_features" / FEAT_TAG
 FEATURE_NAME = "prompt_first_audio_mean_L24-27-30-34"
 
-OUT_DATA = PROJECT / "data" / "teacher_probe" / FEAT_TAG
+OUT_DATA = DATA_ROOT / "teacher_probe" / FEAT_TAG    # model artifacts stay in data/
 CKPT_DIR = OUT_DATA / "checkpoints"
 REP_DIR  = OUT_DATA / "bottleneck_reps"
-OUT_PLOT = PROJECT / "outputs" / "teacher_probe"
+OUT_PLOT = OUTPUTS_ROOT / "fsc" / "teacher_probe"    # results CSV + plots
 for d in (CKPT_DIR, REP_DIR, OUT_PLOT):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -80,28 +87,7 @@ ARCHS = [
 ]
 
 
-# ── Model ───────────────────────────────────────────────────────────────────────
-class Probe(nn.Module):
-    """MLP probe; bottleneck = activation of the last hidden block (feeds the head)."""
-
-    def __init__(self, in_dim, hidden_dims, n_classes, dropout=DROPOUT):
-        super().__init__()
-        self.blocks = nn.ModuleList()
-        d = in_dim
-        for h in hidden_dims:
-            self.blocks.append(nn.Sequential(
-                nn.Linear(d, h), nn.LayerNorm(h), nn.GELU(), nn.Dropout(dropout)
-            ))
-            d = h
-        self.head = nn.Linear(d, n_classes)
-
-    def forward(self, x, return_bottleneck=False):
-        for blk in self.blocks:
-            x = blk(x)
-        logits = self.head(x)
-        if return_bottleneck:
-            return logits, x
-        return logits
+# Probe class is imported from common.probe (above).
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────

@@ -36,8 +36,13 @@ from datasets import Audio, load_dataset
 from tqdm import tqdm
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT  = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
-DATA     = PROJECT / "data"
+import sys
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.config import DATA_ROOT                          # noqa: E402
+
+DATA     = DATA_ROOT
 LABEL_CFG = DATA / "fsc_small_ablation" / "config.json"     # reuse identical label2id
 OUT_DIR  = DATA / "student" / "logmel_cache"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,29 +1,23 @@
 """
-DSResNet-SE: compact audio-only student for FSC intent classification.
+DSResNet-SE: compact audio-only student.
 
-Pipeline (see student/README.md):
+Pipeline:
     log-mel [B,1,T,64]
-      -> Conv2D stem (1->32, stride 2)
-      -> 4x ResDS-SE blocks (32->64->128->192->256, each stride 2)
+      -> Conv2D stem (1->c0, stride (2,2))
+      -> 4x ResDS-SE blocks (stem/b1-2 stride (2,2); b3-4 stride (2,1), so the
+         frequency axis stays at ~8 bins, not collapsed to 2 — better
+         speaker-independent generalization)
       -> global average pooling
-      -> projection head (256->128->64)
-      -> 31-way classifier
+      -> projection head (c4 -> [proj_hidden ->] proj_dim, BatchNorm-normalized)
+      -> n_classes classifier
 
-forward() returns (student_z_64, student_logits) for KD.
+forward() returns (student_z, student_logits) for KD. Parametrized by `channels`
+so the same class serves the strong (default) and small students; proj_dim stays
+64 so the Feature-KD target dim (teacher bottleneck = 64) is matched.
 
-Each ResDS-SE block (per README):
+Each ResDS-SE block:
     x -> dwconv3x3 -> pwconv1x1 -> BN -> ReLU
       -> dwconv3x3 -> pwconv1x1 -> BN -> SE -> (+ residual) -> ReLU
-A 1x1 conv matches the residual path when channels/stride differ.
-
-Design note: the README lists the block internals but not inter-block
-downsampling. Downsampling is applied in the stem and in each block's first
-depthwise conv (standard for efficient audio CNNs, e.g. BC-ResNet). The stem
-and blocks 1-2 use stride (2,2); blocks 3-4 use stride (2,1) so the FREQUENCY
-axis is kept at 8 bins (not collapsed to 2) — gentler frequency downsampling
-that markedly improves speaker-independent generalization. The 64-dim
-bottleneck and projection head are BatchNorm-normalized for stable training.
-Parameter count stays ~0.38M (README's 0.35-0.45M target).
 """
 
 import torch
@@ -85,15 +79,7 @@ class ResDSSEBlock(nn.Module):
 
 
 class DSResNetSE(nn.Module):
-    """Parametrized by channel schedule so the same class serves both the strong
-    student (default) and a smaller capacity-limited variant.
-
-    channels    : (stem_out, b1, b2, b3, b4) output channels.
-    proj_hidden : hidden dim of the projection head; None -> project c4 -> proj_dim
-                  directly (used by the small student, head = 128 -> 64).
-    The 64-dim proj_dim is fixed across variants so the Feature-KD target
-    dimension (teacher bottleneck = 64) stays matched.
-    """
+    """channels = (stem_out, b1, b2, b3, b4); proj_hidden=None -> project c4->proj_dim directly."""
 
     def __init__(self, n_mels=64, n_classes=31, channels=(32, 64, 128, 192, 256),
                  proj_hidden=128, proj_dim=64, dropout=0.2, se_r=8):
@@ -104,8 +90,6 @@ class DSResNetSE(nn.Module):
             nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
         )
-        # Gentler frequency downsampling: blocks 3-4 use stride (2,1) so the
-        # frequency axis stays at 8 bins (not 2) -> better generalization.
         self.block1 = ResDSSEBlock(c0, c1, stride=(2, 2), r=se_r)
         self.block2 = ResDSSEBlock(c1, c2, stride=(2, 2), r=se_r)
         self.block3 = ResDSSEBlock(c2, c3, stride=(2, 1), r=se_r)
@@ -122,7 +106,7 @@ class DSResNetSE(nn.Module):
         else:
             self.proj = nn.Linear(c4, proj_dim)           # direct head, e.g. 128 -> 64
 
-        self.bottleneck_norm = nn.BatchNorm1d(proj_dim)   # normalize 64-dim bottleneck
+        self.bottleneck_norm = nn.BatchNorm1d(proj_dim)   # normalize bottleneck
         self.classifier = nn.Linear(proj_dim, n_classes)
 
     def forward(self, x):
@@ -140,10 +124,10 @@ class DSResNetSE(nn.Module):
 
 def model_summary(model):
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    fp32_mb = n_params * 4 / 1024 ** 2
-    fp16_mb = n_params * 2 / 1024 ** 2
-    int8_mb = n_params * 1 / 1024 ** 2
-    return {"params": n_params, "fp32_mb": fp32_mb, "fp16_mb": fp16_mb, "int8_mb": int8_mb}
+    return {"params": n_params,
+            "fp32_mb": n_params * 4 / 1024 ** 2,
+            "fp16_mb": n_params * 2 / 1024 ** 2,
+            "int8_mb": n_params * 1 / 1024 ** 2}
 
 
 if __name__ == "__main__":

@@ -34,15 +34,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-PROJECT = Path(r"D:\msc_AI\individual_project\multimodal-distillation-for-extreme-edge")
-sys.path.insert(0, str(PROJECT / "src" / "student"))
-from student_model import DSResNetSE, model_summary           # noqa: E402
-from kd_common import (                                       # noqa: E402
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.config import OUTPUTS_ROOT                              # noqa: E402
+from common.models.audio_student import DSResNetSE, model_summary  # noqa: E402
+from fsc.student.kd_common import (                                # noqa: E402
     load_data, evaluate, spec_augment, kd_logit_loss, kd_feature_loss,
     EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, LABEL_SMOOTH, SEED, DEVICE,
 )
 
-OUT = PROJECT / "outputs" / "student" / "hparam_sweep"
+OUT = OUTPUTS_ROOT / "fsc" / "student" / "hparam_sweep"
 OUT.mkdir(parents=True, exist_ok=True)
 
 SMALL_KW = {"channels": (16, 32, 64, 96, 128), "proj_hidden": None}
