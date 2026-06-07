@@ -1,5 +1,6 @@
 # Data (too large for git)
 data/
+data_old/
 
 # Python
 __pycache__/
