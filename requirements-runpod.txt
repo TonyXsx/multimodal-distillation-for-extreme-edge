@@ -1,0 +1,46 @@
+# RunPod (Linux) deps.
+#
+# ASSUMES torch/torchvision/torchaudio come from the base PyTorch image and the
+# venv is created with --system-site-packages (see setup_runpod.sh). Do NOT pin
+# torch here — re-installing it re-downloads multi-GB wheels and can break the
+# CUDA/driver match. Pick a recent "PyTorch 2.x / CUDA 12.x" RunPod template.
+
+# HuggingFace stack
+transformers>=4.52.0
+datasets>=3.0.0
+huggingface_hub>=0.27.0
+safetensors>=0.4.0
+accelerate>=1.0.0
+tokenizers>=0.21.0
+
+# Quantization (4-bit NF4 teacher) — REQUIRED. Was only %pip-installed in the
+# notebook and is missing from the Windows requirements.txt.
+bitsandbytes>=0.43.0
+
+# Qwen2.5-Omni multimodal preprocessing (process_mm_info) + video frame decoding
+qwen-omni-utils[decord]>=0.0.4
+av>=12.0.0
+
+# Audio
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# Evaluation / metrics
+evaluate>=0.4.0
+jiwer>=3.0.0
+
+# Scientific computing
+numpy>=1.26.0,<2.0
+scipy>=1.13.0
+
+# Data / visualisation
+pandas>=2.2.0
+matplotlib>=3.9.0
+seaborn>=0.13.0
+tqdm>=4.66.0
+
+# Notebook / dev
+jupyter>=1.1.0
+notebook>=7.0.0
+ipykernel>=6.29.0
+ipywidgets>=8.1.0
