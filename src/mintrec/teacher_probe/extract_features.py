@@ -81,8 +81,11 @@ from common.config import MINTREC_DATA   # noqa: E402
 # ── Paths ─────────────────────────────────────────────────────────────────────────
 ANNO_DIR  = MINTREC_DATA / "MIntRec2.0"          # train/dev/test.tsv live here
 VIDEO_DIR = ANNO_DIR / "video"                   # extracted .mp4 clips
-FEAT_TAG  = "mintrec2.0_multimodal__qwen2.5-omni-3b-4bit__pf_text-video-audio__audiomean"
-OUT_DIR   = MINTREC_DATA / "teacher_features" / FEAT_TAG
+
+
+def build_feat_tag(dtype):
+    """FEAT_TAG carries the teacher precision so fp16/bf16/4bit runs never clash."""
+    return f"mintrec2.0_multimodal__qwen2.5-omni-3b-{dtype}__pf_text-video-audio__audiomean"
 
 # ── Model / extraction config ─────────────────────────────────────────────────────
 MODEL_NAME    = "Qwen/Qwen2.5-Omni-3B"
@@ -139,20 +142,22 @@ def find_video(row, stem2path):
 
 
 # ── Model loading ───────────────────────────────────────────────────────────────────
-def load_teacher():
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-    )
+def load_teacher(dtype="bf16"):
+    """dtype in {bf16, 4bit}. bf16 = full precision (cleanest KD target — matches
+    the teacher's training dtype, needs ~7GB VRAM); 4bit = bnb NF4 (low-VRAM
+    fallback, e.g. a 6GB laptop GPU)."""
+    model_kwargs = dict(device_map="auto", attn_implementation="eager")
+    if dtype == "4bit":
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+    else:
+        model_kwargs["torch_dtype"] = torch.bfloat16
     processor = Qwen2_5OmniProcessor.from_pretrained(MODEL_NAME)
-    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
-        MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        attn_implementation="eager",
-    )
+    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(MODEL_NAME, **model_kwargs)
     model.eval()
     return model, processor
 
@@ -333,14 +338,18 @@ def main():
     ap = argparse.ArgumentParser(description="Extract frozen multimodal-teacher audio features for MIntRec2.0.")
     ap.add_argument("--split", choices=["train", "dev", "all"], default="all")
     ap.add_argument("--limit", type=int, default=None, help="Process only the first N samples (smoke test).")
+    ap.add_argument("--dtype", choices=["bf16", "4bit"], default="bf16",
+                    help="Teacher precision. bf16 = full precision (RunPod, cleanest target, "
+                         "matches the teacher's training dtype); 4bit = bnb NF4 (low-VRAM laptop fallback).")
     args = ap.parse_args()
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = MINTREC_DATA / "teacher_features" / build_feat_tag(args.dtype)
+    out_dir.mkdir(parents=True, exist_ok=True)
     stem2path, n_mp4 = build_stem2path()
     print(f"Indexed {n_mp4:,} video clips under {VIDEO_DIR}")
 
-    print(f"Loading teacher: {MODEL_NAME} (4-bit NF4) ...")
-    model, processor = load_teacher()
+    print(f"Loading teacher: {MODEL_NAME} ({args.dtype}) ...")
+    model, processor = load_teacher(args.dtype)
     audio_start_id = get_special_id(model, "audio_start_token_id", AUDIO_START_ID_DEFAULT)
     audio_end_id   = get_special_id(model, "audio_end_token_id", AUDIO_END_ID_DEFAULT)
     print(f"audio_start_token_id={audio_start_id}  audio_end_token_id={audio_end_id}")
@@ -354,17 +363,19 @@ def main():
     for split in targets:
         df = dfs[split]
         print(f"\n=== {split}: {len(df)} in-scope samples ===")
-        shard_dir = OUT_DIR / f"{split}_shards"
+        shard_dir = out_dir / f"{split}_shards"
         result = process_split(model, processor, df, stem2path, label2id,
                                audio_start_id, audio_end_id, shard_dir, limit=args.limit)
-        out_path = OUT_DIR / SPLITS[split]
+        out_path = out_dir / SPLITS[split]
         torch.save(result, out_path)
         print(f"Saved {len(result['labels'])} samples x {len(result['features'])} features "
               f"(dim={result['feature_dim']}) -> {out_path}")
 
     config = {
         "model_name": MODEL_NAME,
-        "quantization": "4bit-nf4 (bnb, double-quant, fp16 compute)",
+        "precision": args.dtype,
+        "quantization": ("4bit-nf4 (bnb, double-quant, fp16 compute)"
+                         if args.dtype == "4bit" else f"full ({args.dtype})"),
         "attn_implementation": "eager",
         "input_order": "prompt_first: [text(prompt+transcript), video(frames-only), audio]  (audio LAST)",
         "use_audio_in_video": False,
@@ -380,9 +391,9 @@ def main():
         "feature_dtype": "float16",
         "extracted_at": datetime.now().isoformat(timespec="seconds"),
     }
-    with open(OUT_DIR / "extraction_config.json", "w", encoding="utf-8") as f:
+    with open(out_dir / "extraction_config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"\nWrote {OUT_DIR / 'extraction_config.json'}\nDone.")
+    print(f"\nWrote {out_dir / 'extraction_config.json'}\nDone.")
 
 
 if __name__ == "__main__":

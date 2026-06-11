@@ -18,6 +18,7 @@ Inputs : data/teacher_features/<FEAT_TAG>/{train,dev}_features.pt
 Outputs: outputs/mintrec/teacher_probe/results.csv   (+ printed table)
 """
 
+import argparse
 import csv
 from pathlib import Path
 
@@ -34,9 +35,10 @@ from common.config import MINTREC_DATA, MINTREC_OUTPUTS   # noqa: E402
 from common.probe import Probe                            # noqa: E402
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
-FEAT_TAG = "mintrec2.0_multimodal__qwen2.5-omni-3b-4bit__pf_text-video-audio__audiomean"
-FEAT_DIR = MINTREC_DATA / "teacher_features" / FEAT_TAG
-OUT_DIR  = MINTREC_OUTPUTS / "teacher_probe"
+def build_feat_tag(dtype):
+    return f"mintrec2.0_multimodal__qwen2.5-omni-3b-{dtype}__pf_text-video-audio__audiomean"
+
+OUT_DIR = MINTREC_OUTPUTS / "teacher_probe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Fixed hyperparameters (match FSC probe) ──────────────────────────────────────
@@ -90,9 +92,15 @@ def train_one(hidden, Xtr, ytr, Xev, yev, n_classes):
 
 
 def main():
-    print(f"Device: {DEVICE}")
-    tr = torch.load(FEAT_DIR / "train_features.pt", weights_only=False)
-    dv = torch.load(FEAT_DIR / "dev_features.pt", weights_only=False)
+    ap = argparse.ArgumentParser(description="Linear/MLP probe on frozen multimodal-teacher audio features.")
+    ap.add_argument("--dtype", choices=["bf16", "4bit"], default="bf16",
+                    help="Which teacher-precision features to probe (must match extract_features.py).")
+    args = ap.parse_args()
+
+    feat_dir = MINTREC_DATA / "teacher_features" / build_feat_tag(args.dtype)
+    print(f"Device: {DEVICE}  |  features: {feat_dir.name}")
+    tr = torch.load(feat_dir / "train_features.pt", weights_only=False)
+    dv = torch.load(feat_dir / "dev_features.pt", weights_only=False)
     ytr = tr["labels"].long()
     yev = dv["labels"].long()
     n_classes = int(max(ytr.max(), yev.max()).item()) + 1
@@ -114,7 +122,7 @@ def main():
             })
 
     results.sort(key=lambda r: r["dev_acc"], reverse=True)
-    csv_path = OUT_DIR / "results.csv"
+    csv_path = OUT_DIR / f"results_{args.dtype}.csv"   # keep fp16 / 4bit results side by side
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["feature", "arch", "arch_desc",
                                           "dev_acc", "dev_macro_f1", "train_acc"])
