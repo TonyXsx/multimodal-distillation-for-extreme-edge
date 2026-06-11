@@ -146,7 +146,11 @@ def load_teacher(dtype="bf16"):
     """dtype in {bf16, 4bit}. bf16 = full precision (cleanest KD target — matches
     the teacher's training dtype, needs ~7GB VRAM); 4bit = bnb NF4 (low-VRAM
     fallback, e.g. a 6GB laptop GPU)."""
-    model_kwargs = dict(device_map="auto", attn_implementation="eager")
+    # sdpa (not eager): mathematically equivalent softmax attention, but fused —
+    # it never materializes the full [heads, seq, seq] fp32 score matrix, so memory
+    # is ~linear instead of quadratic in seq_len. hidden_states are unchanged.
+    # (Long MIntRec clips = many vision+audio tokens; eager OOMs on a 22GB GPU.)
+    model_kwargs = dict(device_map="auto", attn_implementation="sdpa")
     if dtype == "4bit":
         model_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -376,7 +380,7 @@ def main():
         "precision": args.dtype,
         "quantization": ("4bit-nf4 (bnb, double-quant, fp16 compute)"
                          if args.dtype == "4bit" else f"full ({args.dtype})"),
-        "attn_implementation": "eager",
+        "attn_implementation": "sdpa",
         "input_order": "prompt_first: [text(prompt+transcript), video(frames-only), audio]  (audio LAST)",
         "use_audio_in_video": False,
         "pooling": "audio_mean over audio-token block",
