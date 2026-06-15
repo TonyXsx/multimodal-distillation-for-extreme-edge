@@ -16,17 +16,11 @@ OUTPUTS_ROOT = PROJECT_ROOT / "outputs"
 # Per-dataset OUTPUT roots (results CSVs + plots).
 FSC_OUTPUTS     = OUTPUTS_ROOT / "fsc"
 MINTREC_OUTPUTS = OUTPUTS_ROOT / "mintrec"
-IEMOCAP_OUTPUTS = OUTPUTS_ROOT / "iemocap"
 
 # Per-dataset DATA roots. FSC artifacts currently live at the data/ top level
 # (s3prl___superb, fsc_small_ablation, teacher_features, teacher_probe, student);
 # new datasets get their own subdir.
 MINTREC_DATA = DATA_ROOT / "mintrec"
-
-# IEMOCAP: place the official release at  data/iemocap/IEMOCAP_full_release/
-# (data/ is junctioned to E:). The corpus is licence-gated — request access
-# from USC SAIL; it cannot be auto-downloaded.
-IEMOCAP_DATA = DATA_ROOT / "iemocap"
 
 
 def ensure_src_on_path():
