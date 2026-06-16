@@ -293,6 +293,8 @@ def process_split(model, proc, df, s2p, label2id, a0, a1, shard_dir, args):
             feats, m = extract_sample(model, proc, text, frames, wav, a0, a1)
         except Exception as ex:
             print(f"  skip {row['id']}: {type(ex).__name__}: {ex}")
+            if torch.cuda.is_available():          # recover from a transient OOM / bad clip
+                torch.cuda.empty_cache(); gc.collect()
             continue
         for k, v in feats.items():
             fb.setdefault(k, []).append(v)
