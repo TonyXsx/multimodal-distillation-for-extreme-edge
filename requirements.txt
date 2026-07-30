@@ -37,3 +37,6 @@ jupyter>=1.1.0
 notebook>=7.0.0
 ipykernel>=6.29.0
 ipywidgets>=8.1.0
+
+# Live demo (fsc/live_demo)
+gradio>=6.0
