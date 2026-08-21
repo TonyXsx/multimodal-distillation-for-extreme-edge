@@ -1,0 +1,190 @@
+"""
+Probe the extracted IEMOCAP teacher features: frozen control vs LoRA-adapted.
+
+Two jobs in one pass.
+
+1. THE CONTROL. Train an identical probe on every 2048-d feature from both
+   arms and compare. This is what decides whether the LoRA step earned its
+   keep, and WHERE it earned it. On MIntRec the answer was lopsided -- the
+   frozen audio feature probed at 0.5443 and adaptation moved it only to
+   0.5533, while the transcript-conditioned readout reached 0.6130, i.e.
+   almost all the benefit landed in a representation an audio-only student
+   cannot reach. IEMOCAP may differ, because here the audio tower was
+   adapted properly (47.2 M LoRA parameters at rank 64, against MIntRec's
+   7.9 M covering only q/k/v), and because emotion actually lives in prosody.
+
+2. THE FEATURE-KD TARGETS. The probe shape is 2048 -> 64 -> 4, so the 64-d
+   bottleneck activation is a compact target the student's own 64-d
+   projection can be aligned to directly, with no extra projector. Those
+   activations are saved for train and val.
+
+   Test bottlenecks are deliberately NOT saved. The student never receives a
+   teacher signal on test -- same no-leakage rule as FSC and MIntRec. Test
+   features are read here only to report how each representation generalises,
+   which is a statement about the teacher, not a signal handed to the student.
+
+Protocol, held fixed across every probe so the comparison is clean (identical
+to fsc/teacher_probe/train_probe.py's B2): 50 epochs, AdamW(lr=1e-3,
+wd=1e-4), batch 256, dropout 0.1, CE, standardised with TRAIN statistics, no
+early stopping and no selection on val.
+
+`logits` is skipped as a probe input -- it is the teacher's 4-d prediction,
+not a representation. Its argmax accuracy is reported separately as the
+teacher's own readout, which also cross-checks that the extraction matches
+what eval_teacher.py measured on the model itself.
+
+Outputs:
+    outputs/iemocap/teacher_probe/probe_results.csv
+    data/iemocap/teacher_probe/bottleneck/<arm>/<feature>/{checkpoint.pt,bottleneck_reps.pt}
+
+Usage:
+    python src/iemocap/teacher_probe/probe_features.py
+    python src/iemocap/teacher_probe/probe_features.py --features last_token audio_mean_l27
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.metrics import accuracy_score, f1_score, recall_score
+
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from common.probe import Probe  # noqa: E402
+from common.training import DEVICE  # noqa: E402
+from iemocap.paths import IEMOCAP_OUTPUTS, IEMOCAP_PROBE, find_adapted_features  # noqa: E402
+from iemocap.teacher.data import CLASSES  # noqa: E402
+
+ARMS = {"adapted": None}   # resolved at run time; frozen is optional, see --arms
+SPLITS = ("train", "val", "test")
+
+# Fixed -- identical to the FSC B2 probe.
+EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, DROPOUT, BOTTLENECK, SEED = 50, 1e-3, 1e-4, 256, 0.1, 64, 42
+
+OUT_ROOT = IEMOCAP_PROBE / "bottleneck"
+OUT_CSV = IEMOCAP_OUTPUTS / "teacher_probe"
+
+
+def load_arm(arm):
+    d = find_adapted_features()
+    out = {}
+    for s in SPLITS:
+        r = torch.load(d / f"{s}_features.pt", weights_only=False)
+        out[s] = {"features": r["features"], "labels": r["labels"], "ids": r["sample_ids"]}
+    return out
+
+
+def metrics(y, p):
+    labels = list(range(len(CLASSES)))
+    return {
+        "wa": round(float(accuracy_score(y, p)), 4),
+        "ua": round(float(recall_score(y, p, average="macro", labels=labels, zero_division=0)), 4),
+        "macro_f1": round(float(f1_score(y, p, average="macro", labels=labels, zero_division=0)), 4),
+    }
+
+
+def train_probe(Xtr, ytr, in_dim, n_classes):
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+    model = Probe(in_dim, [BOTTLENECK], n_classes, dropout=DROPOUT).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    lossf = nn.CrossEntropyLoss()
+    n = Xtr.shape[0]
+    for _ in range(EPOCHS):
+        model.train()
+        perm = torch.randperm(n)
+        for i in range(0, n, BATCH_SIZE):
+            idx = perm[i:i + BATCH_SIZE]
+            opt.zero_grad()
+            loss = lossf(model(Xtr[idx].to(DEVICE)), ytr[idx].to(DEVICE))
+            loss.backward()
+            opt.step()
+    return model
+
+
+@torch.no_grad()
+def infer(model, X, batch=512):
+    model.eval()
+    preds, zs = [], []
+    for i in range(0, X.shape[0], batch):
+        logits, z = model(X[i:i + batch].to(DEVICE), return_bottleneck=True)
+        preds.append(logits.argmax(1).cpu())
+        zs.append(z.cpu())
+    return torch.cat(preds), torch.cat(zs)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Probe IEMOCAP teacher features (frozen vs adapted).")
+    ap.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS))
+    ap.add_argument("--features", nargs="+", default=None, help="default: every 2048-d key")
+    ap.add_argument("--no-save", action="store_true", help="skip writing bottleneck targets")
+    args = ap.parse_args()
+
+    rows = []
+    for arm in args.arms:
+        data = load_arm(arm)
+        keys = args.features or sorted(k for k, v in data["train"]["features"].items()
+                                       if v.shape[1] > len(CLASSES))
+        ytr = data["train"]["labels"]
+
+        # Teacher's own readout, for reference and as an extraction cross-check.
+        if "logits" in data["train"]["features"]:
+            for s in ("val", "test"):
+                lg = data[s]["features"]["logits"].float()
+                rows.append({"arm": arm, "feature": "logits(argmax)", "split": s,
+                             "n": len(lg), **metrics(data[s]["labels"].numpy(),
+                                                     lg.argmax(1).numpy())})
+
+        for key in keys:
+            Xtr = data["train"]["features"][key].float()
+            mu, sd = Xtr.mean(0, keepdim=True), Xtr.std(0, keepdim=True).clamp_min(1e-6)
+            model = train_probe((Xtr - mu) / sd, ytr, Xtr.shape[1], len(CLASSES))
+
+            saved = {}
+            for s in SPLITS:
+                Xs = (data[s]["features"][key].float() - mu) / sd
+                pred, z = infer(model, Xs)
+                saved[s] = z
+                if s != "train":
+                    rows.append({"arm": arm, "feature": key, "split": s,
+                                 "n": len(pred), **metrics(data[s]["labels"].numpy(), pred.numpy())})
+                else:
+                    rows.append({"arm": arm, "feature": key, "split": "train",
+                                 "n": len(pred), **metrics(ytr.numpy(), pred.numpy())})
+            print(f"  {arm:8s} {key:26s} "
+                  + "  ".join(f"{r['split']}:UA={r['ua']:.4f}" for r in rows[-3:]), flush=True)
+
+            if not args.no_save:
+                d = OUT_ROOT / arm / key
+                d.mkdir(parents=True, exist_ok=True)
+                torch.save({"state_dict": model.state_dict(), "mu": mu, "sd": sd,
+                            "in_dim": Xtr.shape[1], "bottleneck": BOTTLENECK,
+                            "classes": CLASSES}, d / "checkpoint.pt")
+                # train + val only: the student never gets a teacher signal on test.
+                torch.save({s: {"z": saved[s], "labels": data[s]["labels"],
+                                "ids": data[s]["ids"]} for s in ("train", "val")},
+                           d / "bottleneck_reps.pt")
+
+    df = pd.DataFrame(rows)
+    OUT_CSV.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUT_CSV / "probe_results.csv", index=False)
+
+    print("\n=== val UA by arm x feature ===")
+    piv = df[df.split == "val"].pivot(index="feature", columns="arm", values="ua")
+    if set(ARMS) <= set(piv.columns):
+        piv["delta"] = (piv["adapted"] - piv["frozen"]).round(4)
+    print(piv.to_string())
+    print("\n=== test UA by arm x feature ===")
+    print(df[df.split == "test"].pivot(index="feature", columns="arm", values="ua").to_string())
+    print(f"\nCSV -> {OUT_CSV / 'probe_results.csv'}")
+    if not args.no_save:
+        print(f"Feature-KD targets -> {OUT_ROOT}")
+
+
+if __name__ == "__main__":
+    main()

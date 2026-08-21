@@ -1,0 +1,43 @@
+# AutoDL (Linux) deps for the IEMOCAP teacher stage.
+#
+# ASSUMES torch/torchvision come from the AutoDL image and the venv is created
+# with --system-site-packages (see setup_autodl.sh). Do NOT pin torch here --
+# reinstalling it re-downloads multi-GB wheels and can break the CUDA/driver
+# match. Pick the image: PyTorch 2.8.0 / CUDA 12.x / Python 3.10-3.12.
+#
+# Differences from requirements-runpod.txt, all of them fixes:
+#   + peft            qlora_finetune.py imports it; it was missing before and
+#                     was clearly pip-installed by hand on RunPod
+#   + scikit-learn    same -- f1_score / recall_score
+#   + opencv-python-headless
+#                     not used by IEMOCAP (no video), but the shard helpers and
+#                     audio loader are imported from the MIntRec extractor,
+#                     which imports cv2 at module level
+
+# HuggingFace stack
+transformers>=4.52.0
+huggingface_hub>=0.27.0
+safetensors>=0.4.0
+accelerate>=1.0.0
+tokenizers>=0.21.0
+
+# QLoRA
+peft>=0.14.0
+bitsandbytes>=0.43.0
+
+# Qwen2.5-Omni multimodal preprocessing
+qwen-omni-utils[decord]>=0.0.4
+av>=12.0.0
+opencv-python-headless>=4.10.0
+
+# Audio
+soundfile>=0.12.0
+librosa>=0.10.0
+audioread>=3.0.0          # qwen_omni_utils imports it directly; librosa 0.11 no longer pulls it in
+
+# Metrics / data
+scikit-learn>=1.4.0
+numpy>=1.26.0
+scipy>=1.13.0
+pandas>=2.2.0
+tqdm>=4.66.0
