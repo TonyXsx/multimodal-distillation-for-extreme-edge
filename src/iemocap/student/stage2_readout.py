@@ -213,7 +213,20 @@ def main():
             f"{r['readout']}={r['test_ua']:.4f}" for r in rows[-len(args.readouts):]), flush=True)
 
     df = pd.DataFrame(rows)
-    df.to_csv(OUT / "stage2_readout.csv", index=False)
+    # One file holds every protocol. The output path is not protocol-suffixed, so a
+    # plain overwrite here would silently wipe the other protocol's whole grid --
+    # merge instead, replacing only the (protocol, encoder, readout, seed) cells
+    # this run actually recomputed.
+    csv = OUT / "stage2_readout.csv"
+    if csv.exists():
+        prev = pd.read_csv(csv)
+        if "protocol" in prev.columns:
+            key = ["protocol", "method", "readout", "seed"]
+            idx = pd.MultiIndex.from_frame(df[key])
+            keep = prev[~pd.MultiIndex.from_frame(prev[key]).isin(idx)]
+            df = pd.concat([keep, df], ignore_index=True)
+            print(f"merged: kept {len(keep)} existing rows, wrote {len(rows)} new")
+    df.to_csv(csv, index=False)
 
     print("\n=== test UA by readout (mean over seeds) ===")
     print(df.pivot_table(index="method", columns="readout", values="test_ua",
