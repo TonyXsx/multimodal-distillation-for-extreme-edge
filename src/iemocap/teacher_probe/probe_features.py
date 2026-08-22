@@ -176,7 +176,7 @@ def main():
 
     print("\n=== val UA by arm x feature ===")
     piv = df[df.split == "val"].pivot(index="feature", columns="arm", values="ua")
-    if set(ARMS) <= set(piv.columns):
+    if {"adapted", "frozen"} <= set(piv.columns):
         piv["delta"] = (piv["adapted"] - piv["frozen"]).round(4)
     print(piv.to_string())
     print("\n=== test UA by arm x feature ===")
