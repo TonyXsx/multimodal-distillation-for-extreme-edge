@@ -252,3 +252,54 @@ def plot_similarity_heatmap(mat, path, title="", subtitle="", vmin=-1.0, vmax=1.
     fig.tight_layout()
     fig.savefig(path, dpi=160, facecolor=SURFACE, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_embedding_grid(panels, class_names, path, title="", subtitle="", ncols=3):
+    """One scatter per representation, all classes coloured together.
+
+    `panels` is a list of (label, Z2, y, caption). Faceting per class the way
+    `plot_class_facets` does answers "where does this class sit"; this answers
+    "how separated is the whole thing", which is the comparison when several
+    representations are placed side by side.
+
+    Four hues are used at once, so the palette has to clear the all-pairs CVD
+    and normal-vision floors rather than the easier adjacent-pair ones -- slots
+    1-4 (blue / orange / aqua / violet) are the subset that does. A legend plus
+    per-panel captions carry identity so colour is never the only channel.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    n = len(panels)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 3.7 * nrows),
+                             facecolor=SURFACE)
+    axes = np.atleast_1d(axes).ravel()
+    for ax, (label, Z2, y, cap) in zip(axes, panels):
+        y = np.asarray(y)
+        for i, name in enumerate(class_names):
+            m = y == i
+            ax.scatter(Z2[m, 0], Z2[m, 1], s=6, c=PALETTE[i % len(PALETTE)],
+                       linewidths=0, alpha=0.85, rasterized=True, label=name)
+        ax.set_title(label, fontsize=10.5, color=INK, pad=5)
+        if cap:
+            ax.set_xlabel(cap, fontsize=8, color=INK_SOFT, labelpad=4)
+        _style(ax)
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+    for ax in axes[n:]:
+        ax.axis("off")
+
+    handles = [Line2D([], [], marker="o", linestyle="", markersize=6,
+                      color=PALETTE[i % len(PALETTE)], label=c)
+               for i, c in enumerate(class_names)]
+    fig.legend(handles=handles, loc="lower center", ncols=len(class_names),
+               frameon=False, fontsize=9.5, labelcolor=INK_SOFT,
+               bbox_to_anchor=(0.5, -0.005))
+    if title:
+        fig.suptitle(title, fontsize=13, color=INK, x=0.01, ha="left", y=0.995)
+    if subtitle:
+        fig.text(0.01, 0.962, subtitle, fontsize=9, color=INK_SOFT, ha="left")
+    fig.tight_layout(rect=(0, 0.045, 1, 0.945 if subtitle else 0.97))
+    fig.savefig(path, dpi=160, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
