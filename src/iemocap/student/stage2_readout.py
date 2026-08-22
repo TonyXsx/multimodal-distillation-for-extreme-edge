@@ -27,8 +27,17 @@ No model is retrained, so all five seeds come for free:
                 trained with the same CE + label smoothing the network would use
     mlp         64 -> 64 -> 4, to see whether a non-linear readout finds more
     knn         k=10 cosine k-NN, parameter-free, as a sanity floor
+    ffn         64 -> 256 -> 64 -> 4, the expand-then-contract shape of a
+                transformer feed-forward block (33,348 params)
     linear_kd   `linear` plus the teacher's logit-KD term at T=2
     mlp_kd      `mlp` plus the same
+    ffn_kd      `ffn` plus the same
+
+Every `_kd` head is paired with its plain twin on purpose. mlp_kd beat every
+linear readout, but it changed two things at once -- width AND loss -- and the
+2x2 showed the two factors do nothing alone and only pay off together. Any new
+head shape has to be reported the same way, or the interaction gets attributed
+to whichever factor is mentioned first.
 
 If the first four agree, the choice of readout is not doing the work and
 `feature_only`'s advantage is a property of the representation.
@@ -102,8 +111,14 @@ def torch_head(ztr, ytr, hidden=None, seed=0, t_logits=None, T=2.0, lam_logit=1.
     mu, sd = ztr.mean(0, keepdims=True), ztr.std(0, keepdims=True) + 1e-6
     X = torch.from_numpy((ztr - mu) / sd).float().to(DEVICE)
     y = torch.from_numpy(ytr).long().to(DEVICE)
-    layers = ([nn.Linear(X.shape[1], hidden), nn.ReLU(), nn.Linear(hidden, N_CLASSES)]
-              if hidden else [nn.Linear(X.shape[1], N_CLASSES)])
+    # `hidden` is None, one width, or a tuple of widths -- (256, 64) gives the
+    # expand-then-contract shape of a transformer feed-forward block
+    dims = [] if hidden is None else ([hidden] if isinstance(hidden, int) else list(hidden))
+    layers, d = [], X.shape[1]
+    for h in dims:
+        layers += [nn.Linear(d, h), nn.ReLU()]
+        d = h
+    layers += [nn.Linear(d, N_CLASSES)]
     head = nn.Sequential(*layers).to(DEVICE)
     opt = torch.optim.AdamW(head.parameters(), lr=HEAD_LR, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=HEAD_EPOCHS)
@@ -144,13 +159,18 @@ def build(readout, ztr, ytr, seed, t_logits=None):
         return torch_head(ztr, ytr, hidden=None, seed=seed, t_logits=t_logits)
     if readout == "mlp_kd":
         return torch_head(ztr, ytr, hidden=64, seed=seed, t_logits=t_logits)
+    if readout == "ffn":
+        return torch_head(ztr, ytr, hidden=(256, 64), seed=seed)
+    if readout == "ffn_kd":
+        return torch_head(ztr, ytr, hidden=(256, 64), seed=seed, t_logits=t_logits)
     raise ValueError(readout)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Refit readouts on cached student embeddings.")
     ap.add_argument("--readouts", nargs="+",
-                    default=["logreg", "linear", "mlp", "knn", "linear_kd", "mlp_kd"])
+                    default=["knn", "logreg", "linear", "mlp", "ffn",
+                             "linear_kd", "mlp_kd", "ffn_kd"])
     ap.add_argument("--methods", nargs="+", default=None, help="default: every cached method")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
