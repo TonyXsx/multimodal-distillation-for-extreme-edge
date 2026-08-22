@@ -43,7 +43,9 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import normalize
 
 # Reference categorical palette, light mode. Validated for all-pairs use.
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7"]
+PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#c2367f", "#a8760a"]
+# First four are the class palette (validated all-pairs); the last two extend it
+# for figures that compare six representations at once.
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_SOFT = "#52514e"
@@ -211,7 +213,10 @@ def plot_grouped_bars(df, value_col, group_col, series_col, path, title="",
     _style(ax)
     ax.grid(axis="x", visible=False)
     if len(series) >= 2:
-        ax.legend(frameon=False, fontsize=8.5, labelcolor=INK_SOFT, ncols=min(len(series), 4))
+        # below the axes: with many series an inset legend lands on top of the bars
+        ax.legend(frameon=False, fontsize=8.5, labelcolor=INK_SOFT,
+                  ncols=min(len(series), 3), loc="upper center",
+                  bbox_to_anchor=(0.5, -0.09), borderaxespad=0.0)
     if title:
         ax.set_title(title, fontsize=12.5, color=INK, loc="left", pad=14)
     if subtitle:
