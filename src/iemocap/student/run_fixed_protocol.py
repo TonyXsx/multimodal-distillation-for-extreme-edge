@@ -75,7 +75,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from common.augment import spec_augment  # noqa: E402
 from common.models.audio_student import DSResNetSE  # noqa: E402
-from common.losses import kd_feature_loss  # noqa: E402
+from common.losses import kd_feature_loss, kd_logit_loss  # noqa: E402
 from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
 from iemocap.student.kd_common import (  # noqa: E402
     BATCH_SIZE, CLASSES, DEVICE, DROPOUT, EPOCHS, FEATURE_TARGETS, LABEL_SMOOTH,
@@ -90,11 +90,24 @@ SUMMARY_CSV = OUT / "fixed_protocol_summary.csv"
 SPLITS = ("train", "val", "test")
 SEEDS = [42, 43, 44, 45, 46]
 
-# name -> (lam_ce, lam_feature, feature target key or None)
+# The target is in the name from here on. The first three keep their original
+# names because rows already exist for them in fixed_protocol_runs.csv; the
+# `feature_target` column disambiguates them.
+#
+# T = 2 is INHERITED from the archived SD batch that used this same protocol, not
+# re-selected here. That hands logit-KD the benefit of the earlier tuning while
+# the two-stage methods get none -- with lam_ce = 0 the cosine term is the only
+# loss, and under AdamW a constant rescaling of the only gradient cancels out of
+# m / sqrt(v), so lam_feature is not a tunable knob at all.
 METHODS = {
-    "ce":           (1.0, 0.0, None),
-    "feature_kd":   (1.0, 1.0, "lasttoken"),
-    "feature_only": (0.0, 1.0, "lasttoken"),
+    "ce":                 dict(ce=1.0, logit=0.0, feat=0.0, target=None,         T=None),
+    "logit_kd":           dict(ce=1.0, logit=1.0, feat=0.0, target=None,         T=2.0),
+    "feature_kd":         dict(ce=1.0, logit=0.0, feat=1.0, target="lasttoken",  T=None),
+    "feature_kd_audio":   dict(ce=1.0, logit=0.0, feat=1.0, target="audio",      T=None),
+    "full_kd_lasttoken":  dict(ce=1.0, logit=1.0, feat=1.0, target="lasttoken",  T=2.0),
+    "full_kd_audio":      dict(ce=1.0, logit=1.0, feat=1.0, target="audio",      T=2.0),
+    "feature_only":       dict(ce=0.0, logit=0.0, feat=1.0, target="lasttoken",  T=None),
+    "feature_only_audio": dict(ce=0.0, logit=0.0, feat=1.0, target="audio",      T=None),
 }
 
 
@@ -131,7 +144,8 @@ def config_fingerprint():
     return cfg, hashlib.sha1(blob.encode()).hexdigest()[:10]
 
 
-def run_one(lam_ce, lam_feat, t_z, data, seed):
+def run_one(spec, t_z, t_logits, data, seed):
+    lam_ce, lam_logit, lam_feat, T = spec["ce"], spec["logit"], spec["feat"], spec["T"]
     Xtr, ytr, mu, sd, evalsets = data
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -153,6 +167,8 @@ def run_one(lam_ce, lam_feat, t_z, data, seed):
             loss = xb.new_zeros(())
             if lam_ce > 0:
                 loss = loss + lam_ce * ce(logits, ytr[idx].to(DEVICE))
+            if lam_logit > 0:
+                loss = loss + lam_logit * kd_logit_loss(logits, t_logits[idx].to(DEVICE), T)
             if lam_feat > 0:
                 loss = loss + lam_feat * kd_feature_loss(z, t_z[idx].to(DEVICE))
             opt.zero_grad()
@@ -242,10 +258,12 @@ def main():
     existing = pd.read_csv(RUNS_CSV) if RUNS_CSV.exists() else pd.DataFrame()
     new = []
     for name in args.methods:
-        lam_ce, lam_feat, tgt = METHODS[name]
+        spec = METHODS[name]
+        tgt = spec["target"]
         feat_key = FEATURE_TARGETS[tgt] if tgt else "none"
         cfg, h = config_fingerprint()
         t_z = teach[f"z_{tgt}"] if tgt else None
+        t_logits = teach["logits"] if spec["logit"] > 0 else None
 
         for seed in args.seeds:
             if len(existing) and ((existing.method == name) & (existing.seed == seed)
@@ -253,7 +271,7 @@ def main():
                 print(f"  {name} seed {seed}: already in {RUNS_CSV.name}, skipping")
                 continue
             t0 = time.time()
-            out = run_one(lam_ce, lam_feat, t_z, data, seed)
+            out = run_one(spec, t_z, t_logits, data, seed)
 
             ztr, ytr_np, _ = out["train"]
             # standardised: without it lbfgs stops at its iteration cap on the
@@ -261,8 +279,12 @@ def main():
             clf = make_pipeline(StandardScaler(),
                                 LogisticRegression(max_iter=5000)).fit(ztr, ytr_np)
 
-            r = {"method": name, "seed": seed, "lam_ce": lam_ce, "lam_feature": lam_feat,
-                 "feature_target": feat_key, "config_hash": h, **cfg,
+            # lam_* / kd_t are recorded but deliberately kept OUT of config_hash:
+            # they are what makes a method a method, so hashing them would put
+            # every method in its own group with no CE rows left to pair against
+            r = {"method": name, "seed": seed, "lam_ce": spec["ce"],
+                 "lam_logit": spec["logit"], "lam_feature": spec["feat"],
+                 "kd_t": spec["T"], "feature_target": feat_key, "config_hash": h, **cfg,
                  "seconds": round(time.time() - t0, 1)}
             for s in SPLITS:
                 z, y, pred = out[s]

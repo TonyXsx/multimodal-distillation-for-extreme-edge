@@ -22,14 +22,24 @@ This script asks the remaining question -- whether the reported number depends
 on which readout is used -- by refitting four heads on the CACHED embeddings.
 No model is retrained, so all five seeds come for free:
 
-    logreg   standardised logistic regression (what fixed_protocol_runs.csv used)
-    linear   torch nn.Linear(64, 4), the same head the network itself carries,
-             trained with the same CE + label smoothing the network would use
-    mlp      64 -> 64 -> 4, to see whether a non-linear readout finds more
-    knn      k=10 cosine k-NN, parameter-free, as a sanity floor
+    logreg      standardised logistic regression (what fixed_protocol_runs.csv used)
+    linear      torch nn.Linear(64, 4), the same head the network itself carries,
+                trained with the same CE + label smoothing the network would use
+    mlp         64 -> 64 -> 4, to see whether a non-linear readout finds more
+    knn         k=10 cosine k-NN, parameter-free, as a sanity floor
+    linear_kd   `linear` plus the teacher's logit-KD term at T=2
+    mlp_kd      `mlp` plus the same
 
-If these agree, the choice of readout is not doing the work and `feature_only`'s
-advantage is a property of the representation.
+If the first four agree, the choice of readout is not doing the work and
+`feature_only`'s advantage is a property of the representation.
+
+The `_kd` pair exists because of a result the fixed protocol turned up: refitting
+a plain head on frozen features HELPS a CE-trained encoder (+0.89pp, p = 0.002)
+but HURTS a logit-KD-trained one (-1.89pp, p = 0.032). Part of what logit-KD buys
+is a better classifier head, not a better representation -- so a two-stage recipe
+that throws that away in stage 2 is leaving it on the table. `linear_kd` puts it
+back: the encoder is still trained with no labels at all, and stage 2 fits the
+260-parameter head against both the labels and the teacher's soft targets.
 
 Outputs (outputs/iemocap/student/):
     stage2_readout.csv       one row per (method, seed, readout), val and test
@@ -57,14 +67,18 @@ _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
+from common.losses import kd_logit_loss  # noqa: E402
 from iemocap.student.kd_common import (  # noqa: E402
-    DEVICE, LABEL_SMOOTH, LR, N_CLASSES, WEIGHT_DECAY,
+    DEVICE, LABEL_SMOOTH, N_CLASSES, WEIGHT_DECAY, load_inputs, load_teacher_signals,
 )
 
 OUT = IEMOCAP_OUTPUTS / "student"
 ZCACHE = IEMOCAP_STUDENT / "z_cache"
 SPLITS = ("train", "val", "test")
-HEAD_EPOCHS = 300
+# 300 full-batch steps at lr 1e-3 left the linear head badly under-fitted on the
+# feature_only embeddings (0.45 vs 0.57 for a converged lbfgs), which reads as a
+# property of the representation when it is only an optimisation artefact.
+HEAD_EPOCHS, HEAD_LR = 3000, 1e-2
 
 
 def metrics(y, p, prefix):
@@ -78,9 +92,12 @@ def metrics(y, p, prefix):
     }
 
 
-def torch_head(ztr, ytr, hidden=None, seed=0):
+def torch_head(ztr, ytr, hidden=None, seed=0, t_logits=None, T=2.0, lam_logit=1.0):
     """A head trained the way the network's own head would have been: CE with the
-    same label smoothing, AdamW with the same lr/wd, full-batch, cosine anneal."""
+    same label smoothing, AdamW with the same lr/wd, full-batch, cosine anneal.
+
+    With `t_logits` the teacher's logit-KD term is added on top, at the same T=2
+    inherited by every other method here."""
     torch.manual_seed(seed)
     mu, sd = ztr.mean(0, keepdims=True), ztr.std(0, keepdims=True) + 1e-6
     X = torch.from_numpy((ztr - mu) / sd).float().to(DEVICE)
@@ -88,13 +105,18 @@ def torch_head(ztr, ytr, hidden=None, seed=0):
     layers = ([nn.Linear(X.shape[1], hidden), nn.ReLU(), nn.Linear(hidden, N_CLASSES)]
               if hidden else [nn.Linear(X.shape[1], N_CLASSES)])
     head = nn.Sequential(*layers).to(DEVICE)
-    opt = torch.optim.AdamW(head.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    opt = torch.optim.AdamW(head.parameters(), lr=HEAD_LR, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=HEAD_EPOCHS)
     lossf = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTH)
+    tl = torch.from_numpy(t_logits).float().to(DEVICE) if t_logits is not None else None
     for _ in range(HEAD_EPOCHS):
         head.train()
         opt.zero_grad()
-        lossf(head(X), y).backward()
+        out = head(X)
+        loss = lossf(out, y)
+        if tl is not None:
+            loss = loss + lam_logit * kd_logit_loss(out, tl, T)
+        loss.backward()
         opt.step()
         sched.step()
     head.eval()
@@ -106,7 +128,7 @@ def torch_head(ztr, ytr, hidden=None, seed=0):
     return predict
 
 
-def build(readout, ztr, ytr, seed):
+def build(readout, ztr, ytr, seed, t_logits=None):
     if readout == "logreg":
         clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000)).fit(ztr, ytr)
         return clf.predict
@@ -118,19 +140,36 @@ def build(readout, ztr, ytr, seed):
         return torch_head(ztr, ytr, hidden=None, seed=seed)
     if readout == "mlp":
         return torch_head(ztr, ytr, hidden=64, seed=seed)
+    if readout == "linear_kd":
+        return torch_head(ztr, ytr, hidden=None, seed=seed, t_logits=t_logits)
+    if readout == "mlp_kd":
+        return torch_head(ztr, ytr, hidden=64, seed=seed, t_logits=t_logits)
     raise ValueError(readout)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Refit readouts on cached student embeddings.")
-    ap.add_argument("--readouts", nargs="+", default=["logreg", "linear", "mlp", "knn"])
+    ap.add_argument("--readouts", nargs="+",
+                    default=["logreg", "linear", "mlp", "knn", "linear_kd", "mlp_kd"])
+    ap.add_argument("--methods", nargs="+", default=None, help="default: every cached method")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
     files = sorted(ZCACHE.glob("*.pt"))
+    if args.methods:
+        files = [f for f in files if f.stem.split("_seed")[0] in args.methods]
     if not files:
         raise FileNotFoundError(f"no cached embeddings in {ZCACHE} -- run run_fixed_protocol.py")
     print(f"{len(files)} cached runs in {ZCACHE}")
+
+    # teacher logits for the _kd readouts. The cache stores splits in the order
+    # load_inputs returns them, which is the order load_teacher_signals asserts
+    # against, so the rows line up -- checked below rather than assumed.
+    t_logits = None
+    if any(r.endswith("_kd") for r in args.readouts):
+        _, ytr_ref, ids_tr = load_inputs("train")
+        t_logits = load_teacher_signals(ids_tr)["logits"].numpy()
+        print(f"teacher logits {t_logits.shape} loaded for the _kd readouts")
 
     rows = []
     for f in files:
@@ -138,8 +177,10 @@ def main():
         seed = int(seedtag.split("_")[0])
         d = torch.load(f, weights_only=False)
         ztr, ytr = d["train"]["z"], d["train"]["y"]
+        if t_logits is not None and not np.array_equal(ytr, ytr_ref.numpy()):
+            raise RuntimeError(f"{f.name}: cached train labels do not match the manifest order")
         for ro in args.readouts:
-            predict = build(ro, ztr, ytr, seed)
+            predict = build(ro, ztr, ytr, seed, t_logits)
             r = {"protocol": PROTOCOL, "method": method, "seed": seed, "readout": ro}
             for s in SPLITS:
                 r.update(metrics(d[s]["y"], predict(d[s]["z"]), s))
