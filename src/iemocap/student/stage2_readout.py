@@ -1,0 +1,170 @@
+"""
+Stage 2: how much does the READOUT on top of a frozen student embedding matter?
+
+`feature_only` trains its 96k-parameter encoder with no labels at all -- only the
+teacher's 64-d vector -- so its own classifier head never receives a gradient and
+is meaningless. It is scored instead with a head fitted on the TRAIN embeddings
+and applied unchanged to val and test. Nothing is ever fitted on test.
+
+That two-stage recipe is NOT the same thing as Feature-KD, and the difference is
+where CE is allowed to act:
+
+    feature_kd    CE and cosine optimised jointly -> CE gradients flow through
+                  the whole encoder and shape z
+    feature_only  the encoder is shaped by cosine ALONE; CE only ever touches
+                  the 260-parameter readout
+
+target_fit.csv showed that distinction is not cosmetic: dropping CE from the
+encoder cost 6pp of fit on train but tripled how much of the teacher's mapping
+survived to test (7.4% -> 25.4%).
+
+This script asks the remaining question -- whether the reported number depends
+on which readout is used -- by refitting four heads on the CACHED embeddings.
+No model is retrained, so all five seeds come for free:
+
+    logreg   standardised logistic regression (what fixed_protocol_runs.csv used)
+    linear   torch nn.Linear(64, 4), the same head the network itself carries,
+             trained with the same CE + label smoothing the network would use
+    mlp      64 -> 64 -> 4, to see whether a non-linear readout finds more
+    knn      k=10 cosine k-NN, parameter-free, as a sanity floor
+
+If these agree, the choice of readout is not doing the work and `feature_only`'s
+advantage is a property of the representation.
+
+Outputs (outputs/iemocap/student/):
+    stage2_readout.csv       one row per (method, seed, readout), val and test
+
+Usage:
+    python src/iemocap/student/stage2_readout.py
+    python src/iemocap/student/stage2_readout.py --readouts logreg linear
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, recall_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+_SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
+from iemocap.student.kd_common import (  # noqa: E402
+    DEVICE, LABEL_SMOOTH, LR, N_CLASSES, WEIGHT_DECAY,
+)
+
+OUT = IEMOCAP_OUTPUTS / "student"
+ZCACHE = IEMOCAP_STUDENT / "z_cache"
+SPLITS = ("train", "val", "test")
+HEAD_EPOCHS = 300
+
+
+def metrics(y, p, prefix):
+    labels = list(range(N_CLASSES))
+    return {
+        f"{prefix}_wa": round(float(accuracy_score(y, p)), 4),
+        f"{prefix}_ua": round(float(recall_score(y, p, average="macro",
+                                                 labels=labels, zero_division=0)), 4),
+        f"{prefix}_macro_f1": round(float(f1_score(y, p, average="macro",
+                                                   labels=labels, zero_division=0)), 4),
+    }
+
+
+def torch_head(ztr, ytr, hidden=None, seed=0):
+    """A head trained the way the network's own head would have been: CE with the
+    same label smoothing, AdamW with the same lr/wd, full-batch, cosine anneal."""
+    torch.manual_seed(seed)
+    mu, sd = ztr.mean(0, keepdims=True), ztr.std(0, keepdims=True) + 1e-6
+    X = torch.from_numpy((ztr - mu) / sd).float().to(DEVICE)
+    y = torch.from_numpy(ytr).long().to(DEVICE)
+    layers = ([nn.Linear(X.shape[1], hidden), nn.ReLU(), nn.Linear(hidden, N_CLASSES)]
+              if hidden else [nn.Linear(X.shape[1], N_CLASSES)])
+    head = nn.Sequential(*layers).to(DEVICE)
+    opt = torch.optim.AdamW(head.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=HEAD_EPOCHS)
+    lossf = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTH)
+    for _ in range(HEAD_EPOCHS):
+        head.train()
+        opt.zero_grad()
+        lossf(head(X), y).backward()
+        opt.step()
+        sched.step()
+    head.eval()
+
+    def predict(z):
+        with torch.no_grad():
+            xb = torch.from_numpy((z - mu) / sd).float().to(DEVICE)
+            return head(xb).argmax(1).cpu().numpy()
+    return predict
+
+
+def build(readout, ztr, ytr, seed):
+    if readout == "logreg":
+        clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000)).fit(ztr, ytr)
+        return clf.predict
+    if readout == "knn":
+        clf = make_pipeline(StandardScaler(),
+                            KNeighborsClassifier(n_neighbors=10, metric="cosine")).fit(ztr, ytr)
+        return clf.predict
+    if readout == "linear":
+        return torch_head(ztr, ytr, hidden=None, seed=seed)
+    if readout == "mlp":
+        return torch_head(ztr, ytr, hidden=64, seed=seed)
+    raise ValueError(readout)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Refit readouts on cached student embeddings.")
+    ap.add_argument("--readouts", nargs="+", default=["logreg", "linear", "mlp", "knn"])
+    args = ap.parse_args()
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(ZCACHE.glob("*.pt"))
+    if not files:
+        raise FileNotFoundError(f"no cached embeddings in {ZCACHE} -- run run_fixed_protocol.py")
+    print(f"{len(files)} cached runs in {ZCACHE}")
+
+    rows = []
+    for f in files:
+        method, seedtag, _ = f.stem.split("_seed")[0], f.stem.split("_seed")[1], None
+        seed = int(seedtag.split("_")[0])
+        d = torch.load(f, weights_only=False)
+        ztr, ytr = d["train"]["z"], d["train"]["y"]
+        for ro in args.readouts:
+            predict = build(ro, ztr, ytr, seed)
+            r = {"protocol": PROTOCOL, "method": method, "seed": seed, "readout": ro}
+            for s in SPLITS:
+                r.update(metrics(d[s]["y"], predict(d[s]["z"]), s))
+            # the network's own head, for reference; meaningless for feature_only
+            r["ownhead_test_ua"] = round(float(np.mean([
+                (d["test"]["pred"][d["test"]["y"] == c] == c).mean()
+                for c in range(N_CLASSES)])), 4)
+            rows.append(r)
+        print(f"  {f.stem}: " + "  ".join(
+            f"{r['readout']}={r['test_ua']:.4f}" for r in rows[-len(args.readouts):]), flush=True)
+
+    df = pd.DataFrame(rows)
+    df.to_csv(OUT / "stage2_readout.csv", index=False)
+
+    print("\n=== test UA by readout (mean over seeds) ===")
+    print(df.pivot_table(index="method", columns="readout", values="test_ua",
+                         aggfunc="mean").round(4).to_string())
+    print("\nsd:")
+    print(df.pivot_table(index="method", columns="readout", values="test_ua",
+                         aggfunc=lambda x: x.std(ddof=1)).round(4).to_string())
+    print("\n=== val UA by readout (mean over seeds) ===")
+    print(df.pivot_table(index="method", columns="readout", values="val_ua",
+                         aggfunc="mean").round(4).to_string())
+    print("\n-> %s" % (OUT / "stage2_readout.csv"))
+
+
+if __name__ == "__main__":
+    main()
