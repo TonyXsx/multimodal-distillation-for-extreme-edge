@@ -40,6 +40,18 @@ from mintrec.teacher_probe.extract_features_local import load_audio  # noqa: E40
 
 SPLITS = ("train", "val", "test")
 
+
+def manifest_splits():
+    """The splits this protocol's manifest actually contains, in canonical order.
+
+    The LOSO folds are true leave-one-session-out and carry no validation set at
+    all, so nothing downstream may assume all three exist -- every loop over
+    splits asks here instead of iterating SPLITS blindly.
+    """
+    df = pd.read_csv(IEMOCAP_MANIFEST, usecols=["split"])
+    present = set(df["split"].unique())
+    return tuple(s for s in SPLITS if s in present)
+
 INSTRUCTION = (
     "You are analyzing a short clip of conversational speech to recognize the "
     "speaker's emotion, among four classes: angry, happy, neutral, sad. Attend "

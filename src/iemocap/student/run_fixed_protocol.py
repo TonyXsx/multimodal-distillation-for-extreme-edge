@@ -80,14 +80,16 @@ from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E4
 from iemocap.student.kd_common import (  # noqa: E402
     BATCH_SIZE, CLASSES, DEVICE, DROPOUT, EPOCHS, FEATURE_TARGETS, LABEL_SMOOTH,
     LR, N_CLASSES, PROJ_DIM, SMALL_KW, WEIGHT_DECAY,
-    load_inputs, load_teacher_signals, normalizer,
+    available_splits, load_inputs, load_teacher_signals, normalizer,
 )
 
 OUT = IEMOCAP_OUTPUTS / "student"
 RUNS_CSV = OUT / "fixed_protocol_runs.csv"
 ZCACHE = IEMOCAP_STUDENT / "z_cache"
 SUMMARY_CSV = OUT / "fixed_protocol_summary.csv"
-SPLITS = ("train", "val", "test")
+# resolved at run time: the LOSO folds are true leave-one-session-out and have
+# no validation set, so the val_* columns simply stay empty for those rows
+SPLITS = available_splits()
 SEEDS = [42, 43, 44, 45, 46]
 
 # The target is in the name from here on. The first three keep their original
@@ -196,8 +198,9 @@ def summarise():
         return
     from scipy import stats
     df = pd.read_csv(RUNS_CSV)
-    keys = ["test_ua", "test_wa", "test_macro_f1", "val_ua",
-            "linprobe_test_ua", "linprobe_val_ua"]
+    # true LOSO has no val, so those columns are absent for those rows
+    keys = [k for k in ("test_ua", "test_wa", "test_macro_f1", "val_ua",
+                        "linprobe_test_ua", "linprobe_val_ua") if k in df.columns]
     rows = []
     for h, grp in df.groupby("config_hash"):
         base = grp[grp.method == "ce"]
@@ -222,8 +225,9 @@ def summarise():
             rows.append(r)
     s = pd.DataFrame(rows)
     s.to_csv(SUMMARY_CSV, index=False)
-    show = ["method", "n_seeds", "val_ua_mean", "val_ua_sd", "test_ua_mean", "test_ua_sd",
-            "linprobe_test_ua_mean", "linprobe_test_ua_sd"]
+    show = [c for c in ("method", "n_seeds", "val_ua_mean", "val_ua_sd",
+                        "test_ua_mean", "test_ua_sd",
+                        "linprobe_test_ua_mean", "linprobe_test_ua_sd") if c in s]
     print("\n=== fixed protocol (%s), own classifier head + linear probe ===" % PROTOCOL.upper())
     print(s[show].to_string(index=False))
     pcols = [c for c in ("test_ua_delta", "test_ua_p", "linprobe_test_ua_delta",
@@ -252,8 +256,7 @@ def main():
     mu, sd = normalizer(Xtr)
     data = (Xtr, ytr, mu, sd, evalsets)
     teach = load_teacher_signals(ids_tr)
-    print(f"train {tuple(Xtr.shape)}  val {tuple(evalsets['val'][0].shape)}  "
-          f"test {tuple(evalsets['test'][0].shape)}")
+    print("  ".join(f"{k} {tuple(v[0].shape)}" for k, v in evalsets.items()))
 
     existing = pd.read_csv(RUNS_CSV) if RUNS_CSV.exists() else pd.DataFrame()
     new = []
@@ -291,8 +294,9 @@ def main():
                 r.update(metrics(y, pred, s))
                 r.update(metrics(y, clf.predict(z), f"linprobe_{s}"))
             new.append(r)
-            print(f"  {name} seed {seed}: val UA {r['val_ua']:.4f}  test UA {r['test_ua']:.4f}"
-                  f"  | linprobe val {r['linprobe_val_ua']:.4f} test {r['linprobe_test_ua']:.4f}"
+            v = f"val UA {r['val_ua']:.4f}  " if "val_ua" in r else ""
+            print(f"  {name} seed {seed}: {v}test UA {r['test_ua']:.4f}"
+                  f"  | linprobe test {r['linprobe_test_ua']:.4f}"
                   f"  ({r['seconds']:.0f}s)", flush=True)
 
             # keep the embeddings: re-deriving a readout must never cost a retrain

@@ -34,9 +34,13 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from common.config import DATA_ROOT, OUTPUTS_ROOT  # noqa: E402
 
+#   si        sessions 2,3,4 / 5 / 1 -- the original single speaker-independent split
+#   sd        stratified on speaker x emotion, all 10 speakers in every split
+#   loso1..5  leave-one-session-out, fold k holds out session k as test
+_PROTOCOLS = ("si", "sd") + tuple(f"loso{k}" for k in range(1, 6))
 PROTOCOL = os.environ.get("IEMOCAP_PROTOCOL", "si").lower()
-if PROTOCOL not in ("si", "sd"):
-    raise ValueError(f"IEMOCAP_PROTOCOL must be 'si' or 'sd', got {PROTOCOL!r}")
+if PROTOCOL not in _PROTOCOLS:
+    raise ValueError(f"IEMOCAP_PROTOCOL must be one of {_PROTOCOLS}, got {PROTOCOL!r}")
 _SUF = "" if PROTOCOL == "si" else f"_{PROTOCOL}"
 
 # Raw release: the five Session*.zip + Documentation.zip live here.

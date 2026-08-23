@@ -199,23 +199,41 @@ def main():
                 pbar.set_postfix(loss=f"{running/max(seen,1):.3f}",
                                  gb=f"{torch.cuda.max_memory_allocated()/1e9:.1f}")
 
-        m = evaluate(clf, proc, device, val_df, args.use_transcript)
-        print(f"[epoch {ep+1}] train_loss={running/max(seen,1):.4f}  "
-              f"val WA={m['wa']:.4f}  UA={m['ua']:.4f}  macroF1={m['macro_f1']:.4f}  "
-              f"peakGB={torch.cuda.max_memory_allocated()/1e9:.1f}", flush=True)
-        print(f"  per-class recall {dict(zip(CLASSES, m['per_class_recall']))}", flush=True)
+        # True LOSO has no validation set. Train the fixed number of epochs and
+        # keep them all; the caller decides which adapter to extract with.
+        m = (evaluate(clf, proc, device, val_df, args.use_transcript)
+             if len(val_df) else None)
+        if m is None:
+            print(f"[epoch {ep+1}] train_loss={running/max(seen,1):.4f}  "
+                  f"(no val split in this protocol)  "
+                  f"peakGB={torch.cuda.max_memory_allocated()/1e9:.1f}", flush=True)
+        else:
+            print(f"[epoch {ep+1}] train_loss={running/max(seen,1):.4f}  "
+                  f"val WA={m['wa']:.4f}  UA={m['ua']:.4f}  macroF1={m['macro_f1']:.4f}  "
+                  f"peakGB={torch.cuda.max_memory_allocated()/1e9:.1f}", flush=True)
+            print(f"  per-class recall {dict(zip(CLASSES, m['per_class_recall']))}",
+                  flush=True)
         thinker.save_pretrained(out_dir / f"adapter_ep{ep+1}")
         torch.save(clf.head.state_dict(), out_dir / f"head_ep{ep+1}.pt")
-        rows.append({"epoch": ep + 1, "train_loss": round(running / max(seen, 1), 4),
-                     "val_n": m["n"], "val_wa": m["wa"], "val_ua": m["ua"],
-                     "val_macro_f1": m["macro_f1"],
-                     **{f"recall_{c}": v for c, v in zip(CLASSES, m["per_class_recall"])},
-                     "peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2)})
+        row = {"epoch": ep + 1, "train_loss": round(running / max(seen, 1), 4),
+               "peak_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2)}
+        if m is not None:
+            row.update({"val_n": m["n"], "val_wa": m["wa"], "val_ua": m["ua"],
+                        "val_macro_f1": m["macro_f1"],
+                        **{f"recall_{c}": v for c, v in zip(CLASSES, m["per_class_recall"])}})
+        rows.append(row)
         pd.DataFrame(rows).to_csv(log_csv, index=False)
 
-    best = max(rows, key=lambda r: r["val_ua"])
-    print(f"\nBest epoch by val UA: {best['epoch']} (UA={best['val_ua']:.4f}) "
-          f"-> extract with adapter_ep{best['epoch']} / head_ep{best['epoch']}.pt")
+    if any("val_ua" in r for r in rows):
+        best = max(rows, key=lambda r: r.get("val_ua", -1))
+        selection = "val_ua"
+        print(f"\nBest epoch by val UA: {best['epoch']} (UA={best['val_ua']:.4f}) "
+              f"-> extract with adapter_ep{best['epoch']} / head_ep{best['epoch']}.pt")
+    else:
+        best = rows[-1]
+        selection = "none (no val split; last epoch)"
+        print(f"\nNo val split -- nothing selected. Last epoch is {best['epoch']}; "
+              f"extract with the adapter the caller asks for.")
 
     with open(out_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump({**vars(args), "model_name": model_name, "hidden": hidden,
@@ -224,7 +242,7 @@ def main():
                    "trainable_params": n_train_p, "total_params": n_total_p,
                    "instruction": INSTRUCTION, "readout_cue": READOUT_CUE,
                    "input_order": input_order_str(args.use_transcript),
-                   "selection_metric": "val_ua", "best_epoch": best["epoch"],
+                   "selection_metric": selection, "best_epoch": best["epoch"],
                    "epochs_log": rows}, f, indent=2, ensure_ascii=False)
     print(f"Saved adapters + heads + config -> {out_dir}")
 

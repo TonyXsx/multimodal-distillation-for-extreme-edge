@@ -65,6 +65,12 @@ SEED = 42
 FEATURE_TARGETS = {"audio": "audio_mean_l27", "lasttoken": "last_token"}
 
 
+def available_splits():
+    """Splits with a log-mel cache. The LOSO folds are true leave-one-session-out
+    and have no validation set, so callers must ask rather than assume."""
+    return tuple(s for s in ("train", "val", "test") if (LOGMEL_DIR / f"{s}.pt").exists())
+
+
 def load_inputs(split):
     d = torch.load(LOGMEL_DIR / f"{split}.pt", weights_only=False)
     return d["X"], d["labels"], d["ids"]

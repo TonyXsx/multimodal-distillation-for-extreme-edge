@@ -214,6 +214,9 @@ def main():
     targets = list(SPLITS) if args.split == "all" else [args.split]
     for split in targets:
         df = load_split(split)
+        if df.empty:                      # true LOSO has no val
+            print(f"[{split}] absent in this protocol's manifest, skipping")
+            continue
         print(f"\n=== {split}: {len(df)} utterances ===")
         res = process_split(thinker, head, proc, device, df, use_transcript,
                             a0, a1, out_dir / f"{split}_shards", args.limit)

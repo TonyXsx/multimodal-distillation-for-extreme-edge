@@ -71,6 +71,9 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for split in args.splits:
         df = load_split(split, limit=args.limit)
+        if df.empty:                      # true LOSO has no val
+            print(f"{split}: absent in this protocol's manifest, skipping")
+            continue
         X, ids, labels, n_crop = [], [], [], 0
         for _, row in tqdm(df.iterrows(), total=len(df), desc=split):
             wav, _ = librosa.load(str(wav_path(row)), sr=SR, mono=True)

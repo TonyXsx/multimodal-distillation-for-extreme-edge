@@ -74,7 +74,10 @@ def load_arm(arm):
     d = find_adapted_features()
     out = {}
     for s in SPLITS:
-        r = torch.load(d / f"{s}_features.pt", weights_only=False)
+        f = d / f"{s}_features.pt"
+        if not f.exists():                # true LOSO has no val
+            continue
+        r = torch.load(f, weights_only=False)
         out[s] = {"features": r["features"], "labels": r["labels"], "ids": r["sample_ids"]}
     return out
 
@@ -134,7 +137,7 @@ def main():
 
         # Teacher's own readout, for reference and as an extraction cross-check.
         if "logits" in data["train"]["features"]:
-            for s in ("val", "test"):
+            for s in (s for s in ("val", "test") if s in data):
                 lg = data[s]["features"]["logits"].float()
                 rows.append({"arm": arm, "feature": "logits(argmax)", "split": s,
                              "n": len(lg), **metrics(data[s]["labels"].numpy(),
@@ -146,7 +149,8 @@ def main():
             model = train_probe((Xtr - mu) / sd, ytr, Xtr.shape[1], len(CLASSES))
 
             saved = {}
-            for s in SPLITS:
+            present = [s for s in SPLITS if s in data]   # true LOSO has no val
+            for s in present:
                 Xs = (data[s]["features"][key].float() - mu) / sd
                 pred, z = infer(model, Xs)
                 saved[s] = z
@@ -157,7 +161,8 @@ def main():
                     rows.append({"arm": arm, "feature": key, "split": "train",
                                  "n": len(pred), **metrics(ytr.numpy(), pred.numpy())})
             print(f"  {arm:8s} {key:26s} "
-                  + "  ".join(f"{r['split']}:UA={r['ua']:.4f}" for r in rows[-3:]), flush=True)
+                  + "  ".join(f"{r['split']}:UA={r['ua']:.4f}"
+                              for r in rows[-len(present):]), flush=True)
 
             if not args.no_save:
                 d = OUT_ROOT / arm / key
@@ -165,20 +170,22 @@ def main():
                 torch.save({"state_dict": model.state_dict(), "mu": mu, "sd": sd,
                             "in_dim": Xtr.shape[1], "bottleneck": BOTTLENECK,
                             "classes": CLASSES}, d / "checkpoint.pt")
-                # train + val only: the student never gets a teacher signal on test.
+                # never test: the student gets no teacher signal on the held-out split.
                 torch.save({s: {"z": saved[s], "labels": data[s]["labels"],
-                                "ids": data[s]["ids"]} for s in ("train", "val")},
+                                "ids": data[s]["ids"]}
+                            for s in present if s != "test"},
                            d / "bottleneck_reps.pt")
 
     df = pd.DataFrame(rows)
     OUT_CSV.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT_CSV / "probe_results.csv", index=False)
 
-    print("\n=== val UA by arm x feature ===")
-    piv = df[df.split == "val"].pivot(index="feature", columns="arm", values="ua")
-    if {"adapted", "frozen"} <= set(piv.columns):
-        piv["delta"] = (piv["adapted"] - piv["frozen"]).round(4)
-    print(piv.to_string())
+    if (df.split == "val").any():          # true LOSO has no val
+        print("\n=== val UA by arm x feature ===")
+        piv = df[df.split == "val"].pivot(index="feature", columns="arm", values="ua")
+        if {"adapted", "frozen"} <= set(piv.columns):
+            piv["delta"] = (piv["adapted"] - piv["frozen"]).round(4)
+        print(piv.to_string())
     print("\n=== test UA by arm x feature ===")
     print(df[df.split == "test"].pivot(index="feature", columns="arm", values="ua").to_string())
     print(f"\nCSV -> {OUT_CSV / 'probe_results.csv'}")

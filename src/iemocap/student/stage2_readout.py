@@ -83,6 +83,7 @@ from iemocap.student.kd_common import (  # noqa: E402
 
 OUT = IEMOCAP_OUTPUTS / "student"
 ZCACHE = IEMOCAP_STUDENT / "z_cache"
+# resolved from the cached embeddings: the LOSO folds have no validation set
 SPLITS = ("train", "val", "test")
 # 300 full-batch steps at lr 1e-3 left the linear head badly under-fitted on the
 # feature_only embeddings (0.45 vs 0.57 for a converged lbfgs), which reads as a
@@ -203,6 +204,8 @@ def main():
             predict = build(ro, ztr, ytr, seed, t_logits)
             r = {"protocol": PROTOCOL, "method": method, "seed": seed, "readout": ro}
             for s in SPLITS:
+                if s not in d:            # true LOSO has no val
+                    continue
                 r.update(metrics(d[s]["y"], predict(d[s]["z"]), s))
             # the network's own head, for reference; meaningless for feature_only
             r["ownhead_test_ua"] = round(float(np.mean([
@@ -234,9 +237,10 @@ def main():
     print("\nsd:")
     print(df.pivot_table(index="method", columns="readout", values="test_ua",
                          aggfunc=lambda x: x.std(ddof=1)).round(4).to_string())
-    print("\n=== val UA by readout (mean over seeds) ===")
-    print(df.pivot_table(index="method", columns="readout", values="val_ua",
-                         aggfunc="mean").round(4).to_string())
+    if "val_ua" in df.columns and df.val_ua.notna().any():   # true LOSO has no val
+        print("\n=== val UA by readout (mean over seeds) ===")
+        print(df.pivot_table(index="method", columns="readout", values="val_ua",
+                             aggfunc="mean").round(4).to_string())
     print("\n-> %s" % (OUT / "stage2_readout.csv"))
 
 
