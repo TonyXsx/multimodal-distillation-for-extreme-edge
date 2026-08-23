@@ -2,8 +2,8 @@
 The figures for the report. Four of them, each answering one question the
 numbers alone cannot.
 
-    fig_results_delta_vs_ce.png            which methods help, by how much,
-                                           and whether that survives the split
+    fig_loso_five_fold.png                 the headline: 5-fold leave-one-session-out
+    fig_results_delta_vs_ce.png            the two single splits, SI and SD
     fig_mechanism_target_fidelity.png      WHY joint Feature-KD does nothing
     fig_repr_{si,sd}_emotion_and_speaker.png   what the embedding actually holds
     fig_teacher_bottleneck_2048_vs_64.png  whether the 64-d target is a good one
@@ -106,6 +106,86 @@ def series(runs, st2, protocol, enc, readout, col="test_ua"):
     else:
         g = st2[(st2.protocol == protocol) & (st2.method == enc) & (st2.readout == readout)]
     return g.sort_values("seed")[["seed", col]].values
+
+
+# ── the headline figure ───────────────────────────────────────────────────────
+def fig_loso():
+    """Five-fold LOSO on its own. Two things have to be visible at once: the
+    effect size with its interval, and the fact that it holds in every fold --
+    a mean of +2.4pp means something quite different if the five folds are
+    +2.1..+2.9 than if they are -2..+7. So each fold is plotted as its own dot
+    behind the summary marker, and the right panel shows why fold-level pairing
+    is the correct test: the held-out sessions differ by 5pp in difficulty, and
+    every one of them still improves."""
+    import matplotlib.pyplot as plt
+    per = pd.read_csv(STUDENT_CSV / "loso_per_fold.csv")
+    tab = pd.read_csv(STUDENT_CSV / "loso_main_table.csv")
+    tab = tab[tab.method != "CE (end-to-end)"].sort_values("delta_pp")
+    order = tab.method.tolist()
+
+    fig, (ax, bx) = plt.subplots(
+        1, 2, figsize=(13.4, 5.2), facecolor=SURFACE,
+        gridspec_kw={"width_ratios": [2.7, 1.0], "wspace": 0.28})
+
+    for i, m in enumerate(order):
+        row = tab[tab.method == m].iloc[0]
+        d = per[per.method == m].delta_pp.values
+        hit = row.folds_positive == 5
+        colour = PALETTE[0] if hit else INK_MUTED
+        # the five folds, jittered so coincident values stay countable
+        ax.scatter(d, np.full(len(d), i) + np.linspace(-0.16, 0.16, len(d)),
+                   s=26, color=colour, alpha=0.38, linewidths=0, zorder=2)
+        ax.errorbar(row.delta_pp, i,
+                    xerr=[[row.delta_pp - row.ci95_lo_pp], [row.ci95_hi_pp - row.delta_pp]],
+                    fmt="o", ms=8, capsize=4, color=colour, ecolor=colour,
+                    elinewidth=2.0, zorder=3)
+        ptxt = "p<0.001" if row.p < 0.001 else f"p={row.p:.3f}"
+        ax.annotate(f"{int(row.folds_positive)}/5   {ptxt}",
+                    (1.005, i), xycoords=("axes fraction", "data"), fontsize=8.5,
+                    color=INK if hit else INK_SOFT, va="center",
+                    fontweight="bold" if hit else "normal")
+
+    ax.axvline(0, color=INK_MUTED, lw=1.2, ls=(0, (4, 3)), zorder=1)
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels(order, fontsize=10, color=INK)
+    ax.set_xlabel("test UA improvement over end-to-end CE (pp)", fontsize=9.5, color=INK_SOFT)
+    ax.set_title("Every method against the CE trained on the same four sessions",
+                 fontsize=10.5, color=INK, loc="left", pad=10)
+    _style(ax)
+    ax.grid(axis="y", visible=False)
+
+    # right: the paired structure the test exploits
+    ce = per[per.method == "CE (end-to-end)"].set_index("fold").test_ua
+    best = per[per.method == order[-1]].set_index("fold").test_ua
+    folds = list(ce.index)
+    for f in folds:
+        bx.plot([0, 1], [ce[f], best[f]], color=PALETTE[0], lw=1.6, alpha=0.75,
+                marker="o", ms=5)
+        bx.annotate(f.replace("loso", "S"), (1.03, best[f]), fontsize=8.5,
+                    color=INK_SOFT, va="center")
+    bx.set_xlim(-0.25, 1.35)
+    bx.set_xticks([0, 1])
+    bx.set_xticklabels(["CE", "2-stage\naudio + mlp_kd"], fontsize=9.5, color=INK)
+    # no y-label: it collides with the tick labels once the left panel's
+    # annotations push this panel right, so the unit goes in the title instead
+    bx.set_title("Five folds, five improvements (test UA)", fontsize=10.5,
+                 color=INK, loc="left", pad=10)
+    _style(bx)
+    bx.grid(axis="x", visible=False)
+
+    fig.suptitle("Two-stage distillation is the only method that survives "
+                 "leave-one-session-out", fontsize=13.5, color=INK, x=0.005,
+                 ha="left", y=0.995)
+    fig.text(0.005, 0.925,
+             "IEMOCAP, 5 folds x 5 seeds. Seeds are averaged within a fold; the paired "
+             "t-test runs across the five folds against that fold's own CE. Faint dots "
+             "are the individual folds, bars are 95% CI of the paired difference.",
+             fontsize=9, color=INK_SOFT, ha="left")
+    fig.subplots_adjust(left=0.155, right=0.965, top=0.80, bottom=0.115, wspace=0.34)
+    fig.savefig(OUT / "fig_loso_five_fold.png", dpi=170, facecolor=SURFACE,
+                bbox_inches="tight")
+    plt.close(fig)
+    print("  fig_loso_five_fold.png")
 
 
 # ── figure 1 ──────────────────────────────────────────────────────────────────
@@ -284,10 +364,11 @@ def main():
     ap = argparse.ArgumentParser(description="Report figures, both protocols, audio target.")
     ap.add_argument("--embed", choices=["tsne", "pca"], default="tsne")
     ap.add_argument("--only", nargs="+", default=None,
-                    choices=["results", "mechanism", "repr", "bottleneck"])
+                    choices=["loso", "results", "mechanism", "repr", "bottleneck"])
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    want = set(args.only) if args.only else {"results", "mechanism", "repr", "bottleneck"}
+    want = set(args.only) if args.only else {"loso", "results", "mechanism",
+                                             "repr", "bottleneck"}
 
     runs = pd.read_csv(STUDENT_CSV / "fixed_protocol_runs.csv")
     st2 = pd.read_csv(STUDENT_CSV / "stage2_readout.csv")
@@ -296,6 +377,8 @@ def main():
                for p in PROTOCOLS}
     print("figures ->", OUT)
 
+    if "loso" in want:
+        fig_loso()
     if "results" in want:
         fig_results(runs, st2)
     if "mechanism" in want:
