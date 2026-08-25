@@ -1,37 +1,26 @@
 """
-Dataset-agnostic representation analysis: is the structure in an embedding the
-structure you think it is?
+Embedding analysis helpers, used for KD debugging.
 
-Written for KD debugging, where the useful questions are rarely "what is the
-accuracy". They are: does this representation separate the CLASSES, or does it
-mostly separate the SPEAKERS? does its class structure survive the move to
-unseen speakers? and does the student's own embedding end up shaped like the
-teacher's at all?
+The questions here aren't about accuracy. They are: does this embedding
+separate the classes or mostly the speakers, does the class structure survive
+unseen speakers, and does the student end up shaped like the teacher.
 
-Nothing here is IEMOCAP-specific -- it takes float matrices and integer label
-arrays. Every function returns plain numbers or a DataFrame, and every plot
-also writes the numbers it draws to CSV, so a figure never becomes the only
-record of a result.
+Takes float matrices and int label arrays, so nothing is IEMOCAP specific.
+Every plot also dumps its numbers to csv so a figure is never the only record.
 
-The two metrics worth explaining:
+Two metrics that need a word:
 
-`group_predictability` asks how well a nuisance variable (speaker, session,
-recording condition) can be read back out of the embedding, by leave-one-out
-k-NN. Compared against the majority-class rate, it says whether a
-representation has entangled identity with the thing you actually wanted. A
-teacher whose embedding predicts SPEAKER at 90% is handing a student
-speaker-specific structure that cannot transfer to held-out speakers, however
-good its class accuracy looks.
+group_predictability - leave-one-out kNN accuracy for a nuisance variable
+(speaker, session), compared to the majority rate. If a teacher embedding
+predicts speaker at 90% it is handing the student structure that can't transfer
+to held-out speakers, no matter how good the class accuracy is.
 
-`knn_transfer` fits on one split and evaluates on another with no training, so
-it measures how much class structure is present and *portable*, separately from
-whatever a trained head could squeeze out.
+knn_transfer - fit on one split, score another, no training. Tells you how much
+class structure is actually portable, separate from what a trained head could
+dig out.
 
-Colours: slots 1-4 of the reference categorical palette (blue / orange / aqua /
-violet), the one four-hue subset that clears the all-pairs CVD and
-normal-vision floors needed for scatter plots. Aqua sits below 3:1 on the light
-surface, so every figure carries a legend and direct labels rather than relying
-on colour alone, and the numbers are always in the CSV.
+Colours are slots 1-4 of the categorical palette. Aqua is below 3:1 on the
+light background so every figure gets a legend and direct labels too.
 """
 
 import numpy as np
@@ -42,10 +31,9 @@ from sklearn.metrics import silhouette_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import normalize
 
-# Reference categorical palette, light mode. Validated for all-pairs use.
+# categorical palette, light mode
 PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#c2367f", "#a8760a"]
-# First four are the class palette (validated all-pairs); the last two extend it
-# for figures that compare six representations at once.
+# first four are the class palette, last two extend it for the six-panel figures
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_SOFT = "#52514e"
@@ -53,15 +41,11 @@ INK_MUTED = "#8a8983"
 GRID = "#e6e5e0"
 
 
-# ── metrics ──────────────────────────────────────────────────────────────────
-
-
 def cosine_separability(Z, y):
-    """Mean cosine within vs between classes, on L2-normalised rows.
+    """mean cosine within vs between classes, rows L2-normalised.
 
-    `gap` is the headline: how much more alike two same-class points are than
-    two different-class points. It is scale-free, so it compares across
-    representations of different dimension and magnitude.
+    `gap` is the number to look at. Scale-free, so it compares across
+    embeddings of different width.
     """
     Zn = normalize(np.asarray(Z, dtype=np.float64))
     S = Zn @ Zn.T
@@ -75,7 +59,7 @@ def cosine_separability(Z, y):
 
 
 def silhouette(Z, y, metric="cosine", max_n=4000, seed=0):
-    """Silhouette in [-1, 1]; sub-sampled above `max_n` because it is O(n^2)."""
+    """silhouette in [-1,1]. subsampled above max_n, it's O(n^2)."""
     Z, y = np.asarray(Z, dtype=np.float64), np.asarray(y)
     if len(y) > max_n:
         idx = np.random.RandomState(seed).choice(len(y), max_n, replace=False)
@@ -84,8 +68,7 @@ def silhouette(Z, y, metric="cosine", max_n=4000, seed=0):
 
 
 def knn_transfer(Z_fit, y_fit, Z_eval, y_eval, k=10, metric="cosine"):
-    """Fit k-NN on one split, score another. No training, so this reports the
-    class structure that is actually present and portable."""
+    """fit kNN on one split, score another. no training involved."""
     knn = KNeighborsClassifier(n_neighbors=k, metric=metric)
     knn.fit(np.asarray(Z_fit, dtype=np.float64), np.asarray(y_fit))
     pred = knn.predict(np.asarray(Z_eval, dtype=np.float64))
@@ -97,16 +80,14 @@ def knn_transfer(Z_fit, y_fit, Z_eval, y_eval, k=10, metric="cosine"):
 
 
 def group_predictability(Z, groups, k=10, metric="cosine"):
-    """Leave-one-out k-NN accuracy for a nuisance variable, vs its majority rate.
-
-    `lift` well above 0 means the embedding encodes that variable. For a
-    speaker label this is the entanglement warning: whatever the student copies
-    will include it.
+    """leave-one-out kNN accuracy for a nuisance variable, against its majority
+    rate. lift well above 0 means the embedding encodes it. For speaker labels
+    that's the warning sign - the student will copy it too.
     """
     Z = np.asarray(Z, dtype=np.float64)
     g = np.asarray(groups)
     knn = KNeighborsClassifier(n_neighbors=k + 1, metric=metric).fit(Z, g)
-    # drop self-match: the first neighbour of a fitted point is itself
+    # drop self match, first neighbour of a fitted point is itself
     nbr = knn.kneighbors(Z, return_distance=False)[:, 1:]
     votes = g[nbr]
     pred = np.array([np.bincount(np.searchsorted(np.unique(g), row)).argmax() for row in votes])
@@ -118,7 +99,7 @@ def group_predictability(Z, groups, k=10, metric="cosine"):
 
 
 def class_centroid_similarity(Z, y, class_names):
-    """Cosine between class centroids -- which classes the embedding conflates."""
+    """cosine between class centroids, i.e. which classes get conflated."""
     Zn = normalize(np.asarray(Z, dtype=np.float64))
     cents = np.stack([Zn[np.asarray(y) == i].mean(0) for i in range(len(class_names))])
     cents = normalize(cents)
@@ -135,9 +116,6 @@ def embed_2d(Z, method="pca", seed=0, perplexity=30):
     raise ValueError(f"unknown method {method!r}")
 
 
-# ── plotting ─────────────────────────────────────────────────────────────────
-
-
 def _style(ax):
     ax.set_facecolor(SURFACE)
     for s in ("top", "right"):
@@ -151,11 +129,10 @@ def _style(ax):
 
 
 def plot_class_facets(Z2, y, class_names, path, title="", subtitle=""):
-    """One small multiple per class: that class in colour, the rest recessive grey.
+    """one panel per class, that class coloured and the rest grey.
 
-    Faceting rather than four hues in one scatter -- with every class on screen
-    at once, overlapping points make identity ambiguous no matter how good the
-    palette is, and the per-class shape is what actually needs reading.
+    Faceted instead of four hues in one scatter, because with everything on
+    screen at once the overlaps make it impossible to tell which point is which.
     """
     import matplotlib.pyplot as plt
 
@@ -183,8 +160,7 @@ def plot_class_facets(Z2, y, class_names, path, title="", subtitle=""):
 
 def plot_grouped_bars(df, value_col, group_col, series_col, path, title="",
                       subtitle="", ylabel="", ref_line=None, ref_label=""):
-    """Grouped bars with every value direct-labelled -- the relief rule, and it
-    keeps the figure readable without the CSV in hand."""
+    """grouped bars, every value labelled so the figure is readable on its own."""
     import matplotlib.pyplot as plt
 
     groups = list(dict.fromkeys(df[group_col]))
@@ -213,7 +189,7 @@ def plot_grouped_bars(df, value_col, group_col, series_col, path, title="",
     _style(ax)
     ax.grid(axis="x", visible=False)
     if len(series) >= 2:
-        # below the axes: with many series an inset legend lands on top of the bars
+        # legend below the axes, inside it sits on top of the bars
         ax.legend(frameon=False, fontsize=8.5, labelcolor=INK_SOFT,
                   ncols=min(len(series), 3), loc="upper center",
                   bbox_to_anchor=(0.5, -0.09), borderaxespad=0.0)
@@ -228,7 +204,7 @@ def plot_grouped_bars(df, value_col, group_col, series_col, path, title="",
 
 
 def plot_similarity_heatmap(mat, path, title="", subtitle="", vmin=-1.0, vmax=1.0):
-    """Sequential single-hue cell chart with every cell labelled."""
+    """single-hue heatmap, every cell labelled."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
 
@@ -260,17 +236,14 @@ def plot_similarity_heatmap(mat, path, title="", subtitle="", vmin=-1.0, vmax=1.
 
 
 def plot_embedding_grid(panels, class_names, path, title="", subtitle="", ncols=3):
-    """One scatter per representation, all classes coloured together.
+    """one scatter per representation, all classes coloured together.
 
-    `panels` is a list of (label, Z2, y, caption). Faceting per class the way
-    `plot_class_facets` does answers "where does this class sit"; this answers
-    "how separated is the whole thing", which is the comparison when several
-    representations are placed side by side.
+    panels is a list of (label, Z2, y, caption). plot_class_facets answers
+    "where does this class sit"; this one answers "how separated is the whole
+    thing", which is what you want when comparing several embeddings.
 
-    Four hues are used at once, so the palette has to clear the all-pairs CVD
-    and normal-vision floors rather than the easier adjacent-pair ones -- slots
-    1-4 (blue / orange / aqua / violet) are the subset that does. A legend plus
-    per-panel captions carry identity so colour is never the only channel.
+    Four hues at once, so there's a legend and per-panel captions as well -
+    colour shouldn't be the only channel.
     """
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D

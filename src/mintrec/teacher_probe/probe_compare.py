@@ -37,7 +37,7 @@ EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, SEED = 50, 1e-3, 1e-4, 256, 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 HEADLINE = "pf_audio_mean_L24-27-30-34"
 
-# (id, hidden_dims, dropout, label) — ordered by capacity for the x-axis
+# (id, hidden_dims, dropout, label) - ordered by capacity for the x-axis
 ARCHS = [
     ("A1", [],           0.1, "linear"),
     ("A2", [1024],       0.1, "1024"),
@@ -122,7 +122,7 @@ def main():
                                           "dev_acc", "dev_macro_f1", "train_acc"])
         w.writeheader(); w.writerows(results)
 
-    # ── plot: dev acc / macroF1 vs head, one line per feature set (headline feature) ──
+    # dev acc / macro-F1 against head size, one line per feature set
     xids = [a[0] for a in ARCHS]
     xlabs = [f"{a[0]}\n{a[3]}" for a in ARCHS]
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))

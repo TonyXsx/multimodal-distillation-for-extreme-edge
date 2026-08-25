@@ -1,11 +1,10 @@
-"""Audio-spectrogram augmentation (dataset-agnostic)."""
+"""specaugment."""
 
 import torch
 
 
 def spec_augment(x, n_freq=2, n_time=2, f_max=12, t_max=40):
-    """Per-batch SpecAugment time/freq masking (training only).
-    x: [B, 1, T, F] normalized log-mel."""
+    """time/freq masking, training only. x is [B,1,T,F] normalised log-mel."""
     B, _, T, F_ = x.shape
     x = x.clone()
     for _ in range(n_freq):

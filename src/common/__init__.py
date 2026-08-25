@@ -1,1 +1,1 @@
-"""Dataset-agnostic, reusable components shared across datasets (FSC, MIntRec, ...)."""
+"""shared bits used by all three datasets."""

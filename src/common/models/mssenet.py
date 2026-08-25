@@ -1,50 +1,40 @@
 """
-MS-SENet (ICASSP 2024) -- PyTorch port of the official Keras implementation.
+MS-SENet (ICASSP 2024), ported from the official Keras code.
 
-Paper : "MS-SENet: Enhancing Speech Emotion Recognition Through Multi-scale
-         Feature Fusion with Squeeze-and-Excitation Blocks", arXiv:2312.11974
-Code  : https://github.com/MengboLi/MS-SENet  (MS-SENet.py, TensorFlow/Keras)
-Base  : TIM-Net, https://github.com/Jiaxin-Ye/TIM-Net_SER (ICASSP 2023)
+paper: arXiv:2312.11974
+code:  https://github.com/MengboLi/MS-SENet (MS-SENet.py)
+base:  TIM-Net, https://github.com/Jiaxin-Ye/TIM-Net_SER
 
-The official repository is treated as authoritative and this is a faithful
-port of it, not a reinterpretation. Where the common textual description of
-the architecture disagrees with that code, the code is followed and the
-difference is recorded here:
+I followed the repo rather than the paper text where the two disagree. Things
+that surprised me while porting, written down so I don't re-derive them:
 
-1. KERNEL ORIENTATION. The three frontend branches are Conv2D(39, (11,1)),
-   (1,9) and (3,3) -- not (9,1)/(1,11). Keras feeds [B, T, F, 1], so the
-   kernel is (time, freq): 11 frames along TIME, 9 bins along FREQUENCY.
-   Descriptions that give 9x1 / 1x11 have the two axes swapped.
+1. Kernel orientation. The frontend branches are (11,1), (1,9) and (3,3).
+   Keras feeds [B,T,F,1] so the kernel is (time, freq), i.e. 11 frames along
+   time and 9 bins along frequency. Descriptions giving 9x1 / 1x11 have the
+   axes the wrong way round.
 
-2. CONCATENATION AXIS. The branches are concatenated on axis=2, the FREQUENCY
-   axis, not on channels: three [B,T,F,39] tensors become [B,T,3F,39]. The
-   channel count stays 39 throughout, which is why the SE block's Dense layers
-   are hard-coded to 39 units.
+2. Concat axis is 2, the frequency axis, not channels. Three [B,T,F,39]
+   become [B,T,3F,39]. Channels stay 39 the whole way, which is why the SE
+   Dense layers are hardcoded to 39.
 
-3. SE HAS NO REDUCTION. Both SE projections are Dense(39): squeeze -> 39 ->
-   39, i.e. reduction ratio 1. Textbook SE uses r=8 or 16.
+3. SE has no reduction. Both projections are Dense(39), so r=1. Usual SE uses
+   8 or 16.
 
-4. THE FRONTEND IS NOT SHARED. It is instantiated twice -- once on the input,
-   once on the time-reversed input -- with independent weights, before the
-   forward and backward temporal branches.
+4. The frontend is not shared. It gets built twice, once on the input and once
+   on the reversed input, with separate weights.
 
-5. A RAW-INPUT SKIP. After the 1x1 channel collapse the frontend output
-   [B,T,3F] is concatenated with the untouched input [B,T,F], giving [B,T,4F]
-   = [B,T,156] for F=39, which is what the temporal projection consumes.
+5. There is a raw-input skip. After the 1x1 collapse, [B,T,3F] is concatenated
+   with the untouched input, giving [B,T,4F] = [B,T,156] for F=39.
 
-6. THE TAB GATE IS MULTIPLICATIVE, NOT ADDITIVE. A Temporal-Aware Block ends
-   `F_x = original_x * sigmoid(conv2_out)`; there is no residual `add`. The
-   block attenuates its own input rather than adding to it.
+6. The TAB gate multiplies, it doesn't add. The block ends with
+   `F_x = original_x * sigmoid(conv2_out)`, no residual add.
 
-Default hyperparameters are the official IEMOCAP settings: 39 filters, kernel
-size 2, one stack, dilations 2^0..2^9 (ten TABs per direction), dropout 0.1,
-SpatialDropout 0.2 in the frontend.
+Defaults are the official IEMOCAP ones: 39 filters, kernel 2, one stack,
+dilations 2^0..2^9, dropout 0.1, spatial dropout 0.2.
 
-The forward pass returns `(z, logits)` -- the same contract as DSResNetSE --
-so the existing training and evaluation code can drive either backbone. Note
-that `z` here is 39-dimensional (the width the paper's fusion produces), not
-the 64 used by the DSResNet-SE student, which matters when a feature-KD
-target has to match it.
+forward() returns (z, logits) like DSResNetSE so the same training code drives
+both. z is 39-d here, not 64, which matters if you want a feature-KD target to
+line up.
 """
 
 import torch
@@ -53,8 +43,7 @@ import torch.nn.functional as F
 
 
 class SEBlock2d(nn.Module):
-    """Official `se_module`: squeeze over (time, freq), excite over channels,
-    with NO reduction -- Dense(C) -> ReLU -> Dense(C) -> sigmoid."""
+    """squeeze over (time, freq), excite over channels. no reduction."""
 
     def __init__(self, channels):
         super().__init__()
@@ -68,13 +57,12 @@ class SEBlock2d(nn.Module):
 
 
 class MultiScaleFrontend(nn.Module):
-    """Three parallel Conv2d branches (11x1 time, 1x9 freq, 3x3 joint), each
-    39 filters, BN + ReLU + SpatialDropout2d(0.2), concatenated along the
-    FREQUENCY axis, SE-reweighted over channels, collapsed to one channel by a
-    1x1 conv, then concatenated with the raw input.
+    """Three parallel conv branches (11x1 time, 1x9 freq, 3x3 joint), 39 filters
+    each, concatenated along frequency, SE over channels, collapsed to one
+    channel by a 1x1, then concatenated with the raw input.
 
-    No pooling: the official code has its AveragePooling2D lines commented
-    out, so temporal resolution is carried through intact.
+    No pooling. The official code has its AveragePooling2D commented out, so
+    time resolution goes through untouched.
     """
 
     def __init__(self, n_feat=39, filters=39, sd_rate=0.2):
@@ -101,8 +89,7 @@ class MultiScaleFrontend(nn.Module):
 
 
 class TemporalAwareBlock(nn.Module):
-    """Two dilated causal convs, then a sigmoid gate applied multiplicatively
-    to the block's own input (official: `F_x = original_x * sigmoid(out)`)."""
+    """two dilated causal convs, then a sigmoid gate multiplied onto the input."""
 
     def __init__(self, channels, kernel_size=2, dilation=1, dropout=0.1):
         super().__init__()
@@ -123,8 +110,7 @@ class TemporalAwareBlock(nn.Module):
 
 
 class TemporalBranch(nn.Module):
-    """1x1 projection followed by `n_tabs` Temporal-Aware Blocks with dilations
-    1, 2, 4, ... 2^(n_tabs-1)."""
+    """1x1 projection then n_tabs TABs, dilations 1, 2, 4, ..."""
 
     def __init__(self, in_dim, filters=39, kernel_size=2, n_tabs=10, dropout=0.1):
         super().__init__()
@@ -143,13 +129,12 @@ class TemporalBranch(nn.Module):
 
 
 class MSSENet(nn.Module):
-    """MS-SENet with the official IEMOCAP configuration.
+    """MS-SENet, official IEMOCAP config.
 
-    Forward and backward branches each get their own frontend and their own
-    TABs. At every dilation level the two are summed, globally average-pooled
-    over time, and stacked; a learnable weight vector over the levels
-    (`WeightLayer` in the official code -- a plain weighted sum, no softmax)
-    fuses them into one utterance vector.
+    Forward and backward branches get their own frontend and their own TABs. At
+    each dilation level the two are summed, pooled over time and stacked, then
+    a learnable weight vector over levels fuses them into one vector. That is
+    `WeightLayer` in the official code, just a weighted sum, no softmax.
     """
 
     def __init__(self, n_feat=39, n_classes=4, filters=39, kernel_size=2,
@@ -159,7 +144,7 @@ class MSSENet(nn.Module):
         self.front_bwd = MultiScaleFrontend(n_feat, filters, sd_rate)
         self.branch_fwd = TemporalBranch(self.front_fwd.out_dim, filters, kernel_size, n_tabs, dropout)
         self.branch_bwd = TemporalBranch(self.front_bwd.out_dim, filters, kernel_size, n_tabs, dropout)
-        # Keras `uniform` initialiser is RandomUniform(-0.05, 0.05).
+        # keras `uniform` is RandomUniform(-0.05, 0.05)
         self.level_weights = nn.Parameter(torch.empty(n_tabs).uniform_(-0.05, 0.05))
         self.classifier = nn.Linear(filters, n_classes)
         self.embed_dim = filters

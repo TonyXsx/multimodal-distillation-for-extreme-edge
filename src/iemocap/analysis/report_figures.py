@@ -116,7 +116,6 @@ def series(runs, st2, protocol, enc, readout, col="test_ua"):
     return g.sort_values("seed")[["seed", col]].values
 
 
-# ── the headline figure ───────────────────────────────────────────────────────
 def fig_loso():
     """Five-fold LOSO on its own. Two things have to be visible at once: the
     effect size with its interval, and the fact that it holds in every fold --
@@ -191,7 +190,6 @@ def fig_loso():
     print("  fig_loso_five_fold.png")
 
 
-# ── delta bar charts, one per feature target ──────────────────────────────────
 BAR_METHODS = {
     "audio": [("feature-KD", "feature_kd_audio", None),
               ("full-KD", "full_kd_audio", None),
@@ -240,7 +238,6 @@ def fig_delta_bars(runs, st2, target):
     print("  " + name)
 
 
-# ── figure 2 ──────────────────────────────────────────────────────────────────
 def fig_mechanism(enc_csv):
     import matplotlib.pyplot as plt
     show = [("feature-KD\n(joint CE + cos)", "feature_kd_audio"),
@@ -277,7 +274,6 @@ def fig_mechanism(enc_csv):
     print("  fig_mechanism_target_fidelity.png")
 
 
-# ── figures 3 and 4 ───────────────────────────────────────────────────────────
 def fig_repr(protocol, runs, st2, method_embed):
     import matplotlib.pyplot as plt
     show = [("CE (no teacher)", "ce", None),
@@ -327,7 +323,6 @@ def fig_repr(protocol, runs, st2, method_embed):
           f"(speakers in this test split: {len(np.unique(spk))} of {len(names)})")
 
 
-# ── figure 5 ──────────────────────────────────────────────────────────────────
 def fig_bottleneck(teach, how, key):
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2, 2, figsize=(8.0, 7.4), facecolor=PAGE)

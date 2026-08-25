@@ -1,47 +1,30 @@
 """
-Frozen-teacher hidden-representation extraction for FSC intent classification.
+Pulls pooled hidden states out of the frozen teacher for FSC.
 
-Runs Qwen2.5-Omni-3B (4-bit NF4) over the small ablation subsets built by
-`experiment_data_construction.py`, and saves a compact bank of POOLED hidden
-representations so that linear-probe / KD experiments can be run later WITHOUT
-re-running the expensive teacher forward pass.
+Runs Qwen2.5-Omni-3B (4-bit NF4) over the small ablation subsets from
+experiment_data_construction.py and saves a bank of pooled vectors, so the
+probe and KD experiments later don't need the teacher forward pass again.
 
-See README.md in this folder for the full specification. Summary:
-
-    selected_layers = [0, 9, 18, 24, 27, 30, 34, 36]   # indices into hidden_states tuple
+    selected_layers = [0, 9, 18, 24, 27, 30, 34, 36]
     llm_layers      = [9, 18, 24, 27, 30, 34, 36]
 
-Two input orders are processed (each requires its own forward pass):
+Two input orders, one forward pass each:
 
-    prompt_first : [prompt tokens] + [audio tokens]
-    audio_first  : [audio tokens]  + [prompt tokens]
+    prompt_first  [prompt] + [audio]
+    audio_first   [audio] + [prompt]
 
-Per sample we save 44 pooled vectors (each [hidden_dim], stored float16):
+44 pooled vectors per sample, fp16:
 
-    layer 0      : projected_audio_mean, projected_audio_last           (2)
-    prompt_first : L{L}_audio_mean, L{L}_audio_last        x7 layers     (14)
-    audio_first  : L{L}_audio_mean, L{L}_audio_last,
-                   L{L}_last_text, L{L}_last_4_text_mean   x7 layers     (28)
+    layer 0       projected_audio_mean, projected_audio_last            2
+    prompt_first  L{L}_audio_mean, L{L}_audio_last                     14
+    audio_first   L{L}_audio_mean, L{L}_audio_last, L{L}_last_text,
+                  L{L}_last_4_text_mean                                28
 
-NOTE: projected audio embeddings (layer 0) are identical regardless of prompt
-order (the audio encoder/projector does not attend to text), so they are
-extracted once from the prompt_first pass.
+Layer 0 is the same whichever order you use, since the audio encoder never
+attends to the text, so it's only taken from the prompt_first pass.
 
-Output (clear naming so different feature combos can be probed later):
-
-    data/teacher_features/fsc_small_ablation__qwen2.5-omni-3b-4bit/
-        train_20pc_features.pt
-        val_10pc_features.pt
-        extraction_config.json
-
-Each .pt file is a dict:
-    {
-        "labels":      LongTensor [N],
-        "sample_ids":  list[str],
-        "metadata":    list[dict],          # token ranges, seq lens, speaker_id, ...
-        "feature_dim": int,
-        "features":    {name: FloatTensor[N, hidden_dim] (float16), ...},
-    }
+Each .pt is a dict with labels, sample_ids, metadata, feature_dim and a
+features dict of [N, hidden_dim] fp16 tensors.
 """
 
 import argparse
@@ -53,12 +36,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# ── Register FFmpeg DLLs (Windows) — must run before torch/soundfile audio paths ──
+# register the ffmpeg dlls before torch/soundfile touch any audio (windows)
 if sys.platform == "win32":
     _ffmpeg_dll_dir = None
     for _p in os.environ.get("PATH", "").split(";"):
         if _p and os.path.exists(os.path.join(_p, "avcodec-62.dll")):
-            _ffmpeg_dll_dir = os.add_dll_directory(_p)  # keep ref alive (GC removes dir)
+            _ffmpeg_dll_dir = os.add_dll_directory(_p)  # keep the ref, GC drops the dir
             break
 
 import soundfile as sf
@@ -71,7 +54,7 @@ from transformers import (
     Qwen2_5OmniProcessor,
 )
 
-# ── Paths ───────────────────────────────────────────────────────────────────────
+
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -80,15 +63,15 @@ from common.config import DATA_ROOT   # noqa: E402
 SUBSET_DIR   = DATA_ROOT / "fsc_small_ablation"
 OUT_DIR      = DATA_ROOT / "teacher_features" / "fsc_small_ablation__qwen2.5-omni-3b-4bit"
 
-# ── Model / extraction config ─────────────────────────────────────────────────────
+
 MODEL_NAME   = "Qwen/Qwen2.5-Omni-3B"
-LLM_LAYERS   = [9, 18, 24, 27, 30, 34, 36]          # indices into hidden_states tuple
-ADD_GEN_PROMPT = True                                # match teacher-notebook inference setup
+LLM_LAYERS   = [9, 18, 24, 27, 30, 34, 36]          # index into hidden_states
+ADD_GEN_PROMPT = True                                # same as the teacher notebook
 
-SHARD_SIZE       = 50    # flush a checkpoint shard to disk every N samples (caps in-flight buffer + enables resume)
-EMPTY_CACHE_EVERY = 10   # call torch.cuda.empty_cache()/gc every N samples to curb VRAM growth over long runs
+SHARD_SIZE       = 50    # flush every N samples, keeps the buffer small and lets it resume
+EMPTY_CACHE_EVERY = 10   # empty_cache + gc every N, vram creeps up otherwise
 
-# Fallback special-token ids (confirmed from model config); overridden dynamically if present.
+# fallbacks, checked against the model config. overridden if the config has them
 AUDIO_START_ID_DEFAULT = 151647
 AUDIO_END_ID_DEFAULT   = 151648
 
@@ -100,7 +83,6 @@ TASK_PROMPT = (
 )
 
 
-# ── Model loading ─────────────────────────────────────────────────────────────────
 def load_teacher():
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -120,7 +102,8 @@ def load_teacher():
 
 
 def get_special_id(model, name, default):
-    """Read a special-token id from the (possibly nested) model config, with fallback."""
+    """special-token id out of the config, which is sometimes nested. falls back
+    to the hardcoded default."""
     cfg = model.config
     if hasattr(cfg, name):
         return getattr(cfg, name)
@@ -130,9 +113,8 @@ def get_special_id(model, name, default):
     return default
 
 
-# ── Token-boundary helpers ─────────────────────────────────────────────────────────
 def find_audio_indices(input_ids, start_id, end_id):
-    """Positions of audio placeholder tokens (strictly between start/end markers)."""
+    """positions of the audio placeholder tokens, between the start/end markers."""
     ids = input_ids[0].tolist()
     s = ids.index(start_id)
     e = ids.index(end_id)
@@ -142,16 +124,15 @@ def find_audio_indices(input_ids, start_id, end_id):
     return audio_idx, s, e
 
 
-# ── Pooling ────────────────────────────────────────────────────────────────────────
 def _to_cpu_fp16(t):
     return t.detach().float().cpu().to(torch.float16)
 
 
 def pool_prompt_first(hidden_states, audio_idx):
-    """Layer-0 projected-audio features + prompt_first audio-token features."""
+    """layer-0 projected audio, plus the prompt_first audio-token features."""
     feats = {}
 
-    # Layer 0 = projected audio embeddings (before LLM blocks). Order-independent.
+    # layer 0 is the projected audio, before any LLM block, so order doesn't matter
     h0 = hidden_states[0][0]                                   # [seq, dim]
     feats["projected_audio_mean"] = _to_cpu_fp16(h0[audio_idx].mean(dim=0))
     feats["projected_audio_last"] = _to_cpu_fp16(h0[audio_idx[-1]])
@@ -164,7 +145,7 @@ def pool_prompt_first(hidden_states, audio_idx):
 
 
 def pool_audio_first(hidden_states, audio_idx, seq_len):
-    """audio_first audio-token controls + task-aware trailing-text features."""
+    """the audio_first controls and the trailing-text features."""
     feats = {}
     last_text_idx = seq_len - 1
     last4_idx = list(range(max(0, seq_len - 4), seq_len))
@@ -178,9 +159,8 @@ def pool_audio_first(hidden_states, audio_idx, seq_len):
     return feats
 
 
-# ── Single-sample extraction ─────────────────────────────────────────────────────────
 def build_inputs(processor, model, audio_np, order):
-    """order in {'prompt_first', 'audio_first'} -> processed inputs on device."""
+    """order is 'prompt_first' or 'audio_first'."""
     audio_part = {"type": "audio", "audio": audio_np}
     text_part  = {"type": "text", "text": TASK_PROMPT}
     content = [text_part, audio_part] if order == "prompt_first" else [audio_part, text_part]
@@ -197,17 +177,17 @@ def build_inputs(processor, model, audio_np, order):
 
 @torch.no_grad()
 def extract_sample(model, processor, audio_np, audio_start_id, audio_end_id):
-    """Returns (features_dict, meta_dict) for one audio sample."""
+    """(features, meta) for one sample."""
     feats, meta = {}, {}
 
-    # ---- prompt_first pass (gives layer-0 + prompt_first audio features) ----
+    # prompt_first pass, gives layer-0 and the prompt_first audio features
     inputs_pf = build_inputs(processor, model, audio_np, "prompt_first")
     out_pf = model.thinker(**inputs_pf, output_hidden_states=True, return_dict=True)
     audio_idx_pf, s_pf, e_pf = find_audio_indices(inputs_pf["input_ids"], audio_start_id, audio_end_id)
     seq_pf = inputs_pf["input_ids"].shape[1]
     feats.update(pool_prompt_first(out_pf.hidden_states, audio_idx_pf))
 
-    # ---- audio_first pass (gives audio_first audio + trailing-text features) ----
+    # audio_first pass, gives the audio controls and the trailing-text features
     inputs_af = build_inputs(processor, model, audio_np, "audio_first")
     out_af = model.thinker(**inputs_af, output_hidden_states=True, return_dict=True)
     audio_idx_af, s_af, e_af = find_audio_indices(inputs_af["input_ids"], audio_start_id, audio_end_id)
@@ -217,16 +197,14 @@ def extract_sample(model, processor, audio_np, audio_start_id, audio_end_id):
     meta["seq_len_prompt_first"]   = seq_pf
     meta["seq_len_audio_first"]    = seq_af
     meta["num_audio_tokens"]       = len(audio_idx_pf)
-    meta["audio_range_prompt_first"] = [s_pf + 1, e_pf]   # [start, end) of audio tokens
+    meta["audio_range_prompt_first"] = [s_pf + 1, e_pf]
     meta["audio_range_audio_first"]  = [s_af + 1, e_af]
-    meta["num_text_tokens_audio_first"] = seq_af - e_af - 1  # tokens after audio block
+    meta["num_text_tokens_audio_first"] = seq_af - e_af - 1  # tokens after the audio
     return feats, meta
 
 
-# ── Sharded checkpointing ────────────────────────────────────────────────────────
 def _flush_shard(shard_dir, shard_idx, feat_bank, labels, sample_ids, metadata):
-    """Write one chunk to disk atomically (temp file + replace) so an interrupted
-    write never leaves a corrupt shard."""
+    """temp file then replace, so a kill mid-write can't leave a broken shard."""
     shard = {
         "labels": torch.tensor(labels, dtype=torch.long),
         "sample_ids": sample_ids,
@@ -241,7 +219,7 @@ def _flush_shard(shard_dir, shard_idx, feat_bank, labels, sample_ids, metadata):
 
 
 def _load_shards(shard_dir):
-    """Load all shards in order and return the merged result dict (original format)."""
+    """load every shard in order and merge them back into one dict."""
     shard_paths = sorted(shard_dir.glob("shard_*.pt"))
     if not shard_paths:
         raise RuntimeError(f"No shards found in {shard_dir}")
@@ -267,14 +245,13 @@ def _load_shards(shard_dir):
 
 
 def _count_done(shard_dir):
-    """Number of samples already saved in existing shards (for resume)."""
+    """how many samples are already on disk, for resuming."""
     done = 0
     for sp in sorted(shard_dir.glob("shard_*.pt")):
         done += len(torch.load(sp, weights_only=False)["sample_ids"])
     return done
 
 
-# ── Split processing ───────────────────────────────────────────────────────────────
 def process_split(model, processor, ds, audio_start_id, audio_end_id, shard_dir, limit=None):
     n = len(ds) if limit is None else min(limit, len(ds))
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -310,25 +287,24 @@ def process_split(model, processor, ds, audio_start_id, audio_end_id, shard_dir,
         })
         metadata.append(meta)
 
-        # Periodically release cached GPU memory to curb fragmentation/growth.
+        # release cached gpu memory now and then, it fragments on long runs
         if (i + 1) % EMPTY_CACHE_EVERY == 0 and torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Flush a shard once the in-flight buffer is full, then clear it.
+        # flush once the buffer is full
         if len(labels) >= SHARD_SIZE:
             _flush_shard(shard_dir, next_shard_idx, feat_bank, labels, sample_ids, metadata)
             next_shard_idx += 1
             feat_bank, labels, sample_ids, metadata = {}, [], [], []
 
-    # Flush any trailing partial buffer.
+    # last partial buffer
     if labels:
         _flush_shard(shard_dir, next_shard_idx, feat_bank, labels, sample_ids, metadata)
 
     return _load_shards(shard_dir)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────────
 SPLITS = {
     "train": ("train_20pc", "train_20pc_features.pt"),
     "val":   ("val_10pc",   "val_10pc_features.pt"),
@@ -366,7 +342,7 @@ def main():
         print(f"Saved {len(result['labels'])} samples x {len(result['features'])} features "
               f"(dim={result['feature_dim']}) -> {out_path}")
 
-    # ---- extraction config (for reproducibility / downstream loading) ----
+    # extraction config, so this can be reproduced and loaded later
     config = {
         "model_name": MODEL_NAME,
         "quantization": "4bit-nf4 (bnb, double-quant, fp16 compute)",

@@ -1,13 +1,14 @@
 """
-FSC student facade: FSC-specific data loading + teacher-signal construction +
-the FSC training constants. Generic, dataset-agnostic pieces (KD losses,
-SpecAugment, evaluate, stratified subsetting, Probe, models) live in src/common/
-and are RE-EXPORTED here so the FSC scripts can import everything from one place.
+FSC-side data loading, teacher signals and training constants.
 
-Inputs it reads:
-  data/student/logmel_cache/{train,val,test}_logmel.pt     (precompute_logmel.py)
-  data/teacher_features/<feat>/{train,val}_features.pt      (full_feature_extraction.py)
-  data/teacher_probe/<feat>/checkpoints/B2_*.pt            (train_probe.py)
+The generic stuff (losses, specaugment, evaluate, Probe, the models) is in
+src/common/ and just re-exported here, so the fsc scripts can import from one
+place.
+
+reads:
+  data/student/logmel_cache/{train,val,test}_logmel.pt   from precompute_logmel.py
+  data/teacher_features/<feat>/{train,val}_features.pt   from full_feature_extraction.py
+  data/teacher_probe/<feat>/checkpoints/B2_*.pt          from train_probe.py
 """
 
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import torch
 
-# ── Make src/ importable (file-relative, no hardcoded drive) ──────────────────────
+
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -26,14 +27,14 @@ from common.training import DEVICE, evaluate, stratified_indices   # noqa: E402,
 from common.losses import kd_logit_loss, kd_feature_loss           # noqa: E402,F401 (re-export)
 from common.augment import spec_augment                            # noqa: E402,F401 (re-export)
 
-# ── FSC paths ─────────────────────────────────────────────────────────────────────
+
 DATA     = DATA_ROOT
 LOGMEL   = DATA_ROOT / "student" / "logmel_cache"
 FEAT_TAG = "fsc_full__qwen2.5-omni-3b-4bit__pf_audiomean_L24-27-30-34"
 FEAT_DIR = DATA_ROOT / "teacher_features" / FEAT_TAG
 PROBE_CKPT_DIR = DATA_ROOT / "teacher_probe" / FEAT_TAG / "checkpoints"
 
-# ── Shared training constants (strong baseline recipe) ────────────────────────────
+
 EPOCHS       = 70
 LR           = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -43,9 +44,8 @@ LABEL_SMOOTH = 0.1
 SEED         = 42
 
 
-# ── Teacher signals ──────────────────────────────────────────────────────────────
 def build_teacher_signals():
-    """Return dict split -> (z_64 [N,64], logits [N,31], sample_ids) from the B2 probe."""
+    """split -> (z_64 [N,64], logits [N,31], sample_ids), taken from the B2 probe."""
     ckpt_path = next(PROBE_CKPT_DIR.glob("B2_*.pt"))
     ckpt = torch.load(ckpt_path, weights_only=False)
     mean, std = ckpt["standardizer"]["mean"], ckpt["standardizer"]["std"]
@@ -65,10 +65,9 @@ def build_teacher_signals():
     return out, ckpt_path.name
 
 
-# ── Data ──────────────────────────────────────────────────────────────────────
 def load_data():
-    """Returns (Xtr, ytr, ztr, ltr), (Xva, yva, zva, lva): normalized log-mel +
-    aligned teacher bottleneck (z) and teacher logits (l)."""
+    """(Xtr, ytr, ztr, ltr), (Xva, yva, zva, lva). normalised log-mel plus the
+    aligned teacher bottleneck z and teacher logits l."""
     tr = torch.load(LOGMEL / "train_logmel.pt", weights_only=False)
     va = torch.load(LOGMEL / "val_logmel.pt",   weights_only=False)
     mean = tr["mean"].view(1, 1, 1, -1)
@@ -82,7 +81,8 @@ def load_data():
     ztr, ltr, idtr = teacher["train"]
     zva, lva, idva = teacher["val"]
 
-    # Critical: teacher signals and student inputs must be the same samples, same order.
+    # teacher signals and student inputs have to be the same samples in the same
+    # order, otherwise everything downstream is silently wrong
     assert tr["sample_ids"] == idtr, "TRAIN sample_id mismatch (student vs teacher)"
     assert va["sample_ids"] == idva, "VAL sample_id mismatch (student vs teacher)"
 

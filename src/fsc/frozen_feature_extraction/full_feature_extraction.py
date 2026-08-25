@@ -1,45 +1,26 @@
 """
-FULL-dataset frozen-teacher feature extraction — single KD-target feature.
+Same extraction but over the full FSC set, and only the one feature that ended
+up being used as the KD target.
 
-Based on the two ablation rounds, the chosen teacher signal is:
+The two ablation rounds picked prompt_first + audio_mean, averaged over layers
+[24, 27, 30, 34]. That got 0.923 val acc on the small ablation, best of any
+audio-derived feature.
 
-    prompt_first · audio_mean · mean over layers [24, 27, 30, 34]
-    (val acc 0.923 on the small ablation — the strongest audio-derived feature)
+So this runs the frozen Qwen over all of FSC and keeps exactly one pooled
+[2048] fp16 vector per sample instead of all the hidden states. Model loading,
+token finding and the sharded resume all come from feature_extraction.py.
 
-This script runs frozen Qwen2.5-Omni-3B (4-bit NF4) over the FULL FSC dataset
-and stores, per sample, exactly ONE pooled [2048] float16 vector — not all the
-hidden states. Reuses model-loading / token-finding / sharded-resume logic from
-`feature_extraction.py`.
+    for L in [24, 27, 30, 34]: v_L = mean over the audio-token states at L
+    feature = mean of the four
 
-Pooling (identical to the 'mean[24,27,30,34]' combo that won the ablation):
-    for each L in [24, 27, 30, 34]:  v_L = mean over audio-token hidden states at layer L
-    feature = mean(v_24, v_27, v_30, v_34)              -> [2048]
+train (23,132) is the KD target, val (3,118) monitors the student KD losses.
+Test is not extracted on purpose. The student is audio-only and has to be
+evaluated on raw test audio, so pulling teacher features there would leak.
 
-Splits:
-    train : FSC train      (23,132 samples)  -> KD training target
-    val   : FSC validation ( 3,118 samples)  -> monitors student KD losses
-    test  : NOT extracted. The student is audio-only and must be evaluated on
-            raw test audio without any teacher signal — extracting teacher
-            features on test would leak information.
+Same dict format as the ablation files, just one feature key.
 
-Output (clear naming, same convention as the ablation bank):
-    data/teacher_features/fsc_full__qwen2.5-omni-3b-4bit__pf_audiomean_L24-27-30-34/
-        train_features.pt
-        val_features.pt
-        train_shards/ , val_shards/      (checkpoints; deletable after merge)
-        extraction_config.json
-
-Each .pt is a dict (same format as the ablation files, single feature key):
-    {
-        "labels": LongTensor[N],
-        "sample_ids": list[str],
-        "metadata": list[dict],
-        "feature_dim": 2048,
-        "features": {"prompt_first_audio_mean_L24-27-30-34": FloatTensor[N,2048] fp16},
-    }
-
-Runtime: ~14-15h on a laptop 3060 (1 forward/sample). Resume-safe — leave it
-running overnight; an interruption resumes from the last completed 50-sample shard.
+About 14-15h on the laptop 3060, one forward per sample. Resumes from the last
+finished 50-sample shard so it's fine to leave overnight.
 """
 
 import argparse
@@ -49,7 +30,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Make the sibling module importable regardless of CWD, then reuse its helpers.
+# make the sibling importable whatever the cwd is, then reuse its helpers
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from feature_extraction import (          # noqa: E402  (import after sys.path tweak)
     MODEL_NAME,
@@ -66,16 +47,16 @@ import torch                              # noqa: E402
 from datasets import Audio, load_dataset  # noqa: E402
 from tqdm import tqdm                     # noqa: E402
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from common.config import DATA_ROOT   # noqa: E402
 
-LABEL_CONFIG = DATA_ROOT / "fsc_small_ablation" / "config.json"   # reuse identical label2id
+LABEL_CONFIG = DATA_ROOT / "fsc_small_ablation" / "config.json"   # same label2id
 OUT_DIR      = DATA_ROOT / "teacher_features" / "fsc_full__qwen2.5-omni-3b-4bit__pf_audiomean_L24-27-30-34"
 
-# ── Feature config ──────────────────────────────────────────────────────────────
+
 COMBINE_LAYERS = [24, 27, 30, 34]
 FEATURE_NAME   = "prompt_first_audio_mean_L24-27-30-34"
 
@@ -86,7 +67,6 @@ AUDIO_START_ID_DEFAULT = 151647
 AUDIO_END_ID_DEFAULT   = 151648
 
 
-# ── Single-sample extraction (one prompt_first forward -> one pooled vector) ─────────
 @torch.no_grad()
 def extract_sample(model, processor, audio_np, audio_start_id, audio_end_id):
     inputs = build_inputs(processor, model, audio_np, "prompt_first")
@@ -96,9 +76,9 @@ def extract_sample(model, processor, audio_np, audio_start_id, audio_end_id):
     seq_len = inputs["input_ids"].shape[1]
     hs = out.hidden_states
 
-    # Per-layer audio-token mean (in fp32 for stable averaging), then mean across layers.
+    # audio-token mean per layer in fp32 (more stable), then mean over layers
     layer_means = [hs[L][0][audio_idx].float().mean(dim=0) for L in COMBINE_LAYERS]
-    combined = torch.stack(layer_means, dim=0).mean(dim=0)        # [hidden_dim]
+    combined = torch.stack(layer_means, dim=0).mean(dim=0)
     feat = combined.cpu().to(torch.float16)
 
     meta = {
@@ -109,7 +89,7 @@ def extract_sample(model, processor, audio_np, audio_start_id, audio_end_id):
     return feat, meta
 
 
-# ── Split processing (sharded + resume; mirrors feature_extraction.process_split) ────
+# split processing, sharded and resumable. mirrors feature_extraction.process_split
 def process_split(model, processor, ds, audio_start_id, audio_end_id, shard_dir, limit=None):
     n = len(ds) if limit is None else min(limit, len(ds))
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -158,14 +138,14 @@ def process_split(model, processor, ds, audio_start_id, audio_end_id, shard_dir,
     return _load_shards(shard_dir)
 
 
-# soundfile decode helper (kept local; feature_extraction imports sf at module level too)
+# local decode helper. feature_extraction imports sf at module level as well
 import soundfile as sf  # noqa: E402
 
 def sf_read(raw_bytes):
     return sf.read(io.BytesIO(raw_bytes), dtype="float32", always_2d=False)
 
 
-# ── FSC loading (full dataset + intent/label_id, reusing the ablation's label2id) ────
+# full dataset load, reusing the ablation's label2id
 def load_full_fsc():
     with open(LABEL_CONFIG, encoding="utf-8") as f:
         label2id = json.load(f)["label2id"]
@@ -189,7 +169,6 @@ def load_full_fsc():
     return fsc, label2id
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────────
 SPLITS = {
     "train": ("train",      "train_features.pt", "train_shards"),
     "val":   ("validation", "val_features.pt",   "val_shards"),

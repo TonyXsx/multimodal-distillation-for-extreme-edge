@@ -1,4 +1,4 @@
-"""Dataset-agnostic training/eval utilities."""
+"""eval helpers."""
 
 import numpy as np
 import torch
@@ -9,7 +9,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 @torch.no_grad()
 def evaluate(model, X, y, batch_size=256, device=None):
-    """Batched eval of a (z, logits)-returning model. Returns acc / macro-F1 / weighted-F1."""
+    """batched eval for a model that returns (z, logits)."""
     device = device or DEVICE
     model.eval()
     preds = []
@@ -26,7 +26,7 @@ def evaluate(model, X, y, batch_size=256, device=None):
 
 
 def stratified_indices(labels, frac, seed):
-    """Sorted indices of a stratified `frac` subset of `labels`, RNG-seeded by `seed`."""
+    """indices of a stratified subset, frac of each class."""
     rng = np.random.RandomState(seed)
     y = labels.numpy()
     idx = []

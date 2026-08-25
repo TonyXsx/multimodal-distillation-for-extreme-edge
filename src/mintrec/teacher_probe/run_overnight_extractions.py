@@ -1,7 +1,7 @@
 """
 Unattended overnight driver: run the local MIntRec2.0 feature extractions one after
 another (the 6.4 GB GPU fits only one at a time). Each variant is resume-safe, so on
-any non-zero exit we just retry — it continues from the last shard. A variant that
+any non-zero exit we just retry - it continues from the last shard. A variant that
 keeps failing is given up on and we move to the next, so one bad run can't block the
 rest. Per-sample failures are already skipped inside the extractor.
 

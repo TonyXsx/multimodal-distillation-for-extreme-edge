@@ -1,17 +1,13 @@
 """
-Constructs small stratified subsets of FSC for layer-ablation experiments.
+Builds the small stratified FSC subsets used for the layer ablation.
 
-  Train : 20 samples per class  (sampled from FSC train split)   -> 620 total
-  Val   : 10 samples per class  (sampled from FSC validation split) -> 310 total
+  train  20 per class -> 620
+  val    10 per class -> 310
 
-NOTE: FSC test split is intentionally left untouched; it is reserved for
-final student-model evaluation.
+Test is deliberately left alone, it's reserved for the final student eval.
 
-Output layout:
-  data/fsc_small_ablation/
-    train_20pc/          <- HuggingFace Dataset (arrow), audio stored as raw bytes
-    val_10pc/            <- HuggingFace Dataset (arrow), audio stored as raw bytes
-    config.json          <- seed, per-class counts, intent_labels, label2id
+writes data/fsc_small_ablation/{train_20pc,val_10pc}/ as HF datasets with the
+audio kept as raw bytes, plus config.json with the seed, counts and label2id.
 """
 
 import json
@@ -21,7 +17,7 @@ from pathlib import Path
 
 from datasets import Audio, load_dataset
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+
 import sys
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
@@ -31,12 +27,12 @@ from common.config import DATA_ROOT   # noqa: E402
 SAVE_DIR  = DATA_ROOT / "fsc_small_ablation"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Config ─────────────────────────────────────────────────────────────────────
+
 SEED            = 42
 TRAIN_PER_CLASS = 20
 VAL_PER_CLASS   = 10
 
-# ── Load FSC ───────────────────────────────────────────────────────────────────
+
 print("Loading FSC dataset...")
 fsc = load_dataset("s3prl/superb", name="ic", cache_dir=str(DATA_ROOT))
 
@@ -45,8 +41,8 @@ action_names   = features["action"].names
 object_names   = features["object"].names
 location_names = features["location"].names
 
-# Keep audio as raw bytes (decode=False) to avoid torchcodec/FFmpeg version issues.
-# Downstream scripts decode manually with soundfile, same as the teacher notebook.
+# decode=False keeps the audio as raw bytes and avoids the torchcodec/ffmpeg
+# version mess. everything downstream decodes with soundfile instead.
 fsc = fsc.cast_column("audio", Audio(sampling_rate=16000, decode=False))
 
 
@@ -71,7 +67,7 @@ def add_label_id(example):
 
 fsc = fsc.map(add_label_id, desc="Adding label IDs")
 
-# ── Stratified Sampling ────────────────────────────────────────────────────────
+
 rng = random.Random(SEED)
 
 
@@ -100,7 +96,7 @@ val_indices = stratified_sample(fsc["validation"], VAL_PER_CLASS)
 train_subset = fsc["train"].select(train_indices)
 val_subset   = fsc["validation"].select(val_indices)
 
-# ── Save Datasets ──────────────────────────────────────────────────────────────
+
 train_path = SAVE_DIR / f"train_{TRAIN_PER_CLASS}pc"
 val_path   = SAVE_DIR / f"val_{VAL_PER_CLASS}pc"
 
@@ -110,7 +106,7 @@ train_subset.save_to_disk(str(train_path))
 print(f"Saving val subset   -> {val_path}")
 val_subset.save_to_disk(str(val_path))
 
-# ── Save Config ────────────────────────────────────────────────────────────────
+
 config = {
     "source_dataset": "s3prl/superb (ic)",
     "seed": SEED,
@@ -128,7 +124,7 @@ config_path = SAVE_DIR / "config.json"
 with open(config_path, "w", encoding="utf-8") as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
 
-# ── Sanity Check ───────────────────────────────────────────────────────────────
+
 train_counts = Counter(train_subset["intent"])
 val_counts   = Counter(val_subset["intent"])
 

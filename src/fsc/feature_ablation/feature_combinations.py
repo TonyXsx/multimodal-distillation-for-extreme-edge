@@ -1,23 +1,19 @@
 """
-Feature combination ablation: mean vs concat over layers [24, 27, 30, 34].
+Does combining layers [24,27,30,34] beat the best single layer?
 
-Tests whether combining multiple layers improves over the best single layer,
-within each of three feature families (no cross-family mixing):
+Three feature families, no mixing between them:
 
-  1. prompt_first · audio_mean   (main KD target candidate)
-  2. audio_first  · audio_mean   (audio-side control)
-  3. audio_first  · last_text    (task-aware upper bound)
+  1. prompt_first + audio_mean   the main KD target candidate
+  2. audio_first + audio_mean    audio-side control
+  3. audio_first + last_text     task-aware upper bound
 
-Two combination methods per family:
-  mean   : average 4 layer vectors  -> [N, 2048]   (same dim as single layer)
-  concat : concatenate 4 vectors    -> [N, 8192]   (4x dim)
+Two ways of combining, per family:
+  mean    average the 4 layer vectors -> [N, 2048], same dim as a single layer
+  concat  stick them together -> [N, 8192]
 
-Same logistic regression probe as linear_probe.py for fair comparison.
+Same logistic regression probe as linear_probe.py so the numbers compare.
 
-Outputs:
-  outputs/feature_ablation/feature_combinations/
-    feature_combinations.png
-    results.csv
+writes results.csv and the plot to outputs/feature_ablation/feature_combinations/.
 """
 
 import csv
@@ -32,7 +28,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+
 import sys
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
@@ -44,16 +40,16 @@ OUT_DIR  = OUTPUTS_ROOT / "fsc" / "feature_ablation" / "feature_combinations"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 COMBO_LAYERS = [24, 27, 30, 34]
-BEST_SINGLE  = 0.916   # best single-feature val_acc from linear_probe.py
+BEST_SINGLE  = 0.916   # best single feature val_acc, from linear_probe.py
 RANDOM_BASE  = 1 / 31
 
 FAMILIES = [
     {
         "name":     "prompt_first · audio_mean",
         "template": "prompt_first_l{L}_audio_mean",
-        "c_ind":    "#aec7e8",   # individual layer bars (light)
-        "c_mean":   "#1f77b4",   # mean combination (medium)
-        "c_cat":    "#0d3b6b",   # concat combination (dark)
+        "c_ind":    "#aec7e8",   # single layers
+        "c_mean":   "#1f77b4",   # mean
+        "c_cat":    "#0d3b6b",   # concat
     },
     {
         "name":     "audio_first · audio_mean",
@@ -71,7 +67,7 @@ FAMILIES = [
     },
 ]
 
-# ── Load features ──────────────────────────────────────────────────────────────
+
 print("Loading features...")
 tr = torch.load(FEAT_DIR / "train_20pc_features.pt", weights_only=False)
 va = torch.load(FEAT_DIR / "val_10pc_features.pt",   weights_only=False)
@@ -88,7 +84,6 @@ def probe(X_tr, X_va):
     return clf.score(sc.transform(X_va), y_va)
 
 
-# ── Run all probes ─────────────────────────────────────────────────────────────
 print("\nRunning probes...")
 records = []
 
@@ -111,7 +106,7 @@ for fam in FAMILIES:
         })
         print(f"    L{L:<3}             {acc:.3f}")
 
-    # Mean combination
+    # mean
     acc_mean = probe(np.mean(layer_Xtr, axis=0), np.mean(layer_Xva, axis=0))
     records.append({
         "family": fam["name"], "method": "mean[24,27,30,34]",
@@ -119,7 +114,7 @@ for fam in FAMILIES:
     })
     print(f"    mean[24,27,30,34]  {acc_mean:.3f}")
 
-    # Concat combination
+    # concat
     acc_cat = probe(np.concatenate(layer_Xtr, axis=1),
                     np.concatenate(layer_Xva, axis=1))
     records.append({
@@ -128,7 +123,7 @@ for fam in FAMILIES:
     })
     print(f"    concat[24,27,30,34]{acc_cat:.3f}")
 
-# ── Save CSV ───────────────────────────────────────────────────────────────────
+
 csv_path = OUT_DIR / "results.csv"
 with open(csv_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=["family", "method", "input_dim", "val_acc"])
@@ -136,7 +131,7 @@ with open(csv_path, "w", newline="", encoding="utf-8") as f:
     writer.writerows(records)
 print(f"\nResults saved -> {csv_path}")
 
-# ── Console summary ────────────────────────────────────────────────────────────
+
 print(f"\n{'Family':<33}  {'Method':<22}  {'Dim':<5}  Val Acc")
 print("-" * 72)
 for r in records:
@@ -145,9 +140,9 @@ for r in records:
 print(f"\n  Random baseline (31 classes): {RANDOM_BASE:.3f}")
 print(f"  Best single feature (linear_probe.py):  {BEST_SINGLE:.3f}")
 
-# ── Plot ───────────────────────────────────────────────────────────────────────
+
 BAR_LABELS = [f"L{L}" for L in COMBO_LAYERS] + ["mean\n[24-34]", "concat\n[24-34]"]
-N_PER_FAM  = len(BAR_LABELS)   # 6
+N_PER_FAM  = len(BAR_LABELS)
 BAR_W      = 0.55
 GROUP_GAP  = 1.2
 N_FAM      = len(FAMILIES)
@@ -176,13 +171,13 @@ for fi, fam in enumerate(FAMILIES):
         xtick_pos.append(x)
         xtick_lab.append(lbl)
 
-    # Group label below x-axis
+    # group label under the axis
     group_cx = base_x + (N_PER_FAM - 1) * BAR_W / 2
     ax.text(group_cx, -0.095, fam["name"],
             ha="center", va="top", fontsize=8.5, fontweight="bold",
             transform=ax.get_xaxis_transform())
 
-    # Vertical separator between groups (skip after last)
+    # separator between groups, not after the last one
     if fi < N_FAM - 1:
         sep_x = base_x + N_PER_FAM * BAR_W + GROUP_GAP / 2 - BAR_W / 2
         ax.axvline(sep_x, color="#cccccc", linewidth=1.0)
@@ -203,7 +198,7 @@ ax.axhline(BEST_SINGLE,  color="black", linestyle="--", linewidth=1.2, alpha=0.4
 ax.set_ylim(0, 1.05)
 ax.grid(axis="y", alpha=0.3, zorder=0)
 
-# Legend
+# legend
 legend_handles = []
 for fam in FAMILIES:
     short = fam["name"]

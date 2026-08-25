@@ -1,30 +1,23 @@
 """
-Live microphone demo for the tiny FSC audio-only student (Gradio).
+Gradio mic demo for the tiny FSC student.
 
-Qualitative sanity check ONLY -- not a formal evaluation. See README.md in
-this folder for the closed 31-intent vocabulary, example commands to speak,
-and why live-mic accuracy is expected to be lower than the held-out FSC
-test-set numbers (speaker/microphone/room domain shift).
+Sanity check only, not an evaluation. The README in this folder has the 31
+intents, some commands to try, and why live mic accuracy comes out lower than
+the test set numbers (different speaker, mic and room).
 
-Preprocessing is NOT re-derived here -- it reuses the exact training-time
-pipeline by import, so a mismatch between this demo and the trained model's
-expectations cannot silently creep in:
-  * fsc.student.precompute_logmel.wav_to_logmel -- identical mel extraction
-    (16 kHz, n_fft=400, hop=160, n_mels=64, fmax=8000, pad/truncate to 3 s)
-  * train mean/std loaded from data/student/logmel_cache/train_logmel.pt
-    (the exact per-bin normalization stats used for training/eval)
-  * common.models.audio_student.DSResNetSE with fsc.student.final_test.SMALL_KW
-    -- the exact small-student architecture (97,991 params, ~0.37 MB FP32)
+The preprocessing is imported rather than rewritten, so it can't drift from
+what the model was trained on:
+  wav_to_logmel from fsc.student.precompute_logmel
+  train mean/std from data/student/logmel_cache/train_logmel.pt
+  DSResNetSE with SMALL_KW from fsc.student.final_test
 
-Any of the 8 existing final-test checkpoints can be selected and compared
-side by side on the same recording (Qwen2.5-Omni teacher x 4 methods,
-HuBERT-large teacher x 4 methods).
+Any of the 8 final-test checkpoints can be picked and compared on the same
+recording (Qwen teacher x 4 methods, HuBERT teacher x 4 methods).
 
-Run:
     python src/fsc/live_demo/app.py
-Then open the printed local URL (http://127.0.0.1:7860) and allow
-microphone access -- browsers treat localhost as a secure context, so no
-HTTPS setup is needed.
+
+then open the printed localhost url and allow the mic. localhost counts as a
+secure context so there's no https to set up.
 """
 
 import json
@@ -46,7 +39,7 @@ from fsc.student.precompute_logmel import wav_to_logmel, SR, LABEL_CFG  # noqa: 
 from fsc.student.final_test import SMALL_KW                           # noqa: E402
 from fsc.student.kd_common import LOGMEL, DEVICE                      # noqa: E402
 
-# ── Checkpoints (all 8: 2 teachers x 4 KD methods) ────────────────────────────
+
 QWEN_DIR = DATA_ROOT / "student" / "final_test_checkpoints"
 HUBERT_DIR = DATA_ROOT / "student" / "hubert_final_test_checkpoints"
 CHECKPOINTS = {
@@ -61,13 +54,13 @@ CHECKPOINTS = {
 }
 DEFAULT_CHECKPOINT = "Qwen (multimodal) - Full KD"
 
-# ── Labels ──────────────────────────────────────────────────────────────────
+
 with open(LABEL_CFG, encoding="utf-8") as f:
     LABEL2ID = json.load(f)["label2id"]
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
 N_CLASSES = len(ID2LABEL)
 
-# ── Train normalization stats (identical to kd_common.load_data) ─────────────
+
 _train_cache = torch.load(LOGMEL / "train_logmel.pt", weights_only=False)
 MEAN = _train_cache["mean"].clone().view(1, 1, 1, -1)
 STD = _train_cache["std"].clone().view(1, 1, 1, -1)
@@ -90,7 +83,7 @@ print("Ready.")
 
 def _to_16k_float(sr, wav):
     wav = np.asarray(wav)
-    if wav.ndim > 1:                                    # stereo -> mono
+    if wav.ndim > 1:                                    # to mono
         wav = wav.mean(axis=1)
     if np.issubdtype(wav.dtype, np.integer):
         wav = wav.astype(np.float32) / np.iinfo(wav.dtype).max
@@ -108,7 +101,7 @@ def predict(audio, checkpoint_name):
     sr, wav = audio
     wav = _to_16k_float(sr, wav)
 
-    logmel = wav_to_logmel(wav)                                      # [T, 64], training-identical
+    logmel = wav_to_logmel(wav)                                      # [T, 64]
     X = torch.from_numpy(logmel).unsqueeze(0).unsqueeze(0).float()   # [1, 1, T, 64]
     X = ((X - MEAN) / STD).to(DEVICE)
 

@@ -1,1 +1,1 @@
-"""Model zoo: audio_student (DSResNet-SE); future: av_student (multimodal)."""
+"""models. right now just the DSResNet-SE student."""

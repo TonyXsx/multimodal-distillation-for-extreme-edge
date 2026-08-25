@@ -1,29 +1,28 @@
 """
-Full 2x2 KD ablation with TUNED hyperparameters, multi-seed.
+The 2x2 KD ablation with tuned hyperparameters, multiple seeds.
 
-Factorial design (capacity x data), each cell x 4 methods x 3 seeds:
+capacity x data, each cell run with 4 methods and 3 seeds:
 
-              100% data        20% data
-  strong   strong_100        strong_20
-  small    small_100         small_20
+              100% data      20% data
+  strong    strong_100     strong_20
+  small     small_100      small_20
 
-Methods (tuned on the small student, see outputs/student/kd_hparam_sweep.csv):
-  T = 8, lambda_logit = 1.0, lambda_feature = 1.0
-  ce_only    : CE
-  logit_kd   : CE + 1.0 * KL(T=8)
-  feature_kd : CE + 1.0 * cosine
-  full_kd    : CE + 1.0 * KL(T=8) + 1.0 * cosine
+HPs come from the sweep on the small student: T=8, lam_logit=1.0,
+lam_feature=1.0.
 
-Seeds = [42, 43, 44]. For the 20% settings, the seed drives BOTH the stratified
-data subset AND the init (so each seed = a different 20% subset + different init).
-For 100% settings the seed only drives init. Report mean +/- std over seeds.
+  ce_only     CE
+  logit_kd    CE + KL(T=8)
+  feature_kd  CE + cosine
+  full_kd     both
 
-Selection per run = best-by-val-macro-F1 (val = dev set; FSC test untouched).
+Seeds 42-44. On the 20% cells the seed picks the stratified subset as well as
+the init, so each seed is a different subset. On 100% it only picks the init.
+Reported as mean +/- std over seeds.
 
-Writes (NEW location, existing results untouched):
-  outputs/student/kd_2x2_tuned/results.csv     (all 48 runs, long form)
-  outputs/student/kd_2x2_tuned/summary.csv     (16 cells, mean +/- std)
-  outputs/student/kd_2x2_tuned/kd_2x2_tuned.png
+Each run keeps its best val macro-F1 checkpoint. Test is left alone.
+
+writes results.csv (48 runs), summary.csv (16 cells) and the plot into
+outputs/student/kd_2x2_tuned/.
 """
 
 import csv
@@ -50,7 +49,7 @@ from fsc.student.kd_common import (                                # noqa: E402
 OUT = OUTPUTS_ROOT / "fsc" / "student" / "kd_2x2_tuned"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# ── Tuned KD hyperparameters ──────────────────────────────────────────────────────
+
 T_KD        = 8.0
 LAM_LOGIT   = 1.0
 LAM_FEATURE = 1.0
@@ -75,7 +74,7 @@ def small_factory():
     return DSResNetSE(**SMALL_KW)
 
 
-# setting -> (model_factory, data_fraction)
+# setting -> (model factory, data fraction)
 SETTINGS = [
     ("strong_100", strong_factory, 1.00),
     ("strong_20",  strong_factory, 0.20),
@@ -132,7 +131,7 @@ def main():
 
     train_data, val_data = load_data()
 
-    runs = []   # long form: one row per (setting, method, seed)
+    runs = []   # one row per (setting, method, seed)
     for setting, factory, frac in SETTINGS:
         print(f"\n##### {setting} (frac={frac}) #####")
         for method, (ll, lf) in METHODS.items():
@@ -146,7 +145,7 @@ def main():
                 print(f"  {setting:<10} {method:<11} seed{seed}: "
                       f"acc={m['acc']:.4f} macroF1={m['macro_f1']:.4f}")
 
-    # ── results.csv (all runs) ────────────────────────────────────────────────────
+
     res_path = OUT / "results.csv"
     with open(res_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["setting", "method", "seed", "T", "lam_logit",
@@ -154,7 +153,7 @@ def main():
         w.writeheader(); w.writerows(runs)
     print(f"\nResults CSV -> {res_path}")
 
-    # ── summary.csv (mean +/- std over seeds) ─────────────────────────────────────
+
     summary = []
     for setting, _, _ in SETTINGS:
         for method in METHODS:
@@ -174,7 +173,7 @@ def main():
         w.writeheader(); w.writerows(summary)
     print(f"Summary CSV -> {sum_path}")
 
-    # console summary
+    # print it
     print(f"\n{'setting':<11}{'method':<12}{'macroF1 mean±std':<20}{'gain vs CE'}")
     print("-" * 60)
     for setting, _, _ in SETTINGS:
@@ -192,7 +191,7 @@ def make_plot(summary):
     method_color = {"ce_only": "#7f7f7f", "logit_kd": "#1f77b4",
                     "feature_kd": "#ff7f0e", "full_kd": "#2ca02c"}
     methods = list(METHODS.keys())
-    # 2x2 grid: rows = capacity (strong top / small bottom), cols = data (100% left / 20% right)
+    # rows are capacity, cols are data fraction
     grid = [["strong_100", "strong_20"], ["small_100", "small_20"]]
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))

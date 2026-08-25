@@ -82,7 +82,7 @@ def main():
     print(f"Device {DEVICE} | train {len(ytr)} dev {len(yev)} | classes {nc}\n")
 
     results = []
-    # (0) teacher's OWN readout: argmax of saved logits (no probe) — should match training dev
+    # (0) teacher's OWN readout: argmax of saved logits (no probe) - should match training dev
     dev_logits_acc = (dv["features"]["logits"].float().argmax(1) == yev).float().mean().item()
     dev_logits_f1 = f1_score(yev.numpy(), dv["features"]["logits"].float().argmax(1).numpy(), average="macro")
     print(f"[teacher readout] dev_acc={dev_logits_acc:.4f} macroF1={dev_logits_f1:.4f}  (argmax of logits, no probe)\n")
@@ -95,7 +95,7 @@ def main():
         if key in tr["features"]:
             probe_feature(key, tr["features"][key], ytr, dv["features"][key], yev, nc, results, "QLoRA")
 
-    # (2) frozen baseline for side-by-side (note: different input order/pooling — indicative, not identical pipeline)
+    # (2) frozen baseline for side-by-side (note: different input order/pooling - indicative, not identical pipeline)
     if (FROZEN_DIR / "train_features.pt").exists():
         ftr = torch.load(FROZEN_DIR / "train_features.pt", weights_only=False)
         fdv = torch.load(FROZEN_DIR / "dev_features.pt", weights_only=False)

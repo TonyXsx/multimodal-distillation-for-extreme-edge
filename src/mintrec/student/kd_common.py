@@ -42,7 +42,7 @@ FEATURE_CACHE = MINTREC_DATA / "student" / "feature_cache"
 QLORA_DIR = MINTREC_DATA / "teacher_features" / "mintrec2.0__qwen2.5-omni-3b-4bit-QLORA__tva_tr__adapter_ep3"
 BOTTLENECK_DIR = MINTREC_DATA / "teacher_probe" / "qlora_bottleneck"
 
-# ── Shared training constants (reused from FSC's final recipe, unchanged) ─────────
+
 EPOCHS = 70
 LR = 1e-3
 WEIGHT_DECAY = 1e-4

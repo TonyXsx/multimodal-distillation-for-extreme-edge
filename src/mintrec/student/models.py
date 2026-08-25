@@ -2,7 +2,7 @@
 MIntRec2.0 tiny students: audio-only and audio-visual.
 
 Reuses the FSC audio encoder UNCHANGED (common.models.audio_student.DSResNetSE,
-SMALL_KW — 97,991 params, ~0.37 MiB FP32). Longer MIntRec clips need no
+SMALL_KW - 97,991 params, ~0.37 MiB FP32). Longer MIntRec clips need no
 architecture change: DSResNetSE global-average-pools over the full time-freq
 map before the projection head, so param count is independent of input
 length.

@@ -1,20 +1,12 @@
 """
-Linear probe ablation over all 44 frozen teacher features.
+Linear probe over all 44 frozen teacher features.
 
-Trains a logistic regression (no projection, pure linear separability test)
-on each feature independently, evaluates on val, and produces:
+One logistic regression per feature, no projection, so it's a pure linear
+separability test. Reads the pre-extracted feature files, sklearn on CPU, runs
+in under a minute.
 
-  outputs/feature_ablation/linear_probe/
-    feature_ablation_linear_probe.png   <- ranked bar chart + layer curves
-    results.csv                         <- full results table
-
-This script only reads pre-extracted feature files and runs CPU-only sklearn.
-No GPU needed. Runtime: < 1 min.
-
-Inputs:
-  data/teacher_features/fsc_small_ablation__qwen2.5-omni-3b-4bit/
-    train_20pc_features.pt
-    val_10pc_features.pt
+writes the ranked bar chart + layer curves and results.csv into
+outputs/feature_ablation/linear_probe/.
 """
 
 from pathlib import Path
@@ -28,7 +20,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+
 import sys
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
@@ -40,11 +32,11 @@ OUT_DIR  = OUTPUTS_ROOT / "fsc" / "feature_ablation" / "linear_probe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 LLM_LAYERS = [9, 18, 24, 27, 30, 34, 36]
-ALL_LAYERS = [0] + LLM_LAYERS   # 0 = projected audio (before any LLM block)
+ALL_LAYERS = [0] + LLM_LAYERS   # 0 is the projected audio, before any LLM block
 
-# ── Feature name parser ────────────────────────────────────────────────────────
+
 def parse_feature(name: str) -> tuple[str, int, str]:
-    """Returns (order, layer_idx, pooling_type)."""
+    """(order, layer_idx, pooling)."""
     if name.startswith("projected_"):
         return "layer0", 0, name[len("projected_"):]
     if name.startswith("prompt_first_"):
@@ -53,9 +45,9 @@ def parse_feature(name: str) -> tuple[str, int, str]:
         rest = name[len("audio_first_"):]
     order = "prompt_first" if name.startswith("prompt_first") else "audio_first"
     layer_str, pooling = rest.split("_", 1)
-    return order, int(layer_str[1:]), pooling  # strip 'l' prefix from e.g. 'l27'
+    return order, int(layer_str[1:]), pooling  # strip the 'l' from e.g. l27
 
-# ── Load features ──────────────────────────────────────────────────────────────
+
 print("Loading features...")
 tr = torch.load(FEAT_DIR / "train_20pc_features.pt", weights_only=False)
 va = torch.load(FEAT_DIR / "val_10pc_features.pt",   weights_only=False)
@@ -64,7 +56,7 @@ y_va = va["labels"].numpy()
 feat_names = list(tr["features"].keys())
 print(f"  {len(feat_names)} features  |  train {len(y_tr)}  |  val {len(y_va)}")
 
-# ── Run logistic regression for every feature ──────────────────────────────────
+
 print("\nRunning linear probes...")
 records = []
 for name in feat_names:
@@ -84,7 +76,7 @@ for name in feat_names:
 
 records.sort(key=lambda r: r["val_acc"], reverse=True)
 
-# ── Save CSV ────────────────────────────────────────────────────────────────────
+
 import csv
 csv_path = OUT_DIR / "results.csv"
 with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -100,7 +92,7 @@ for i, r in enumerate(records, 1):
     print(f"  {i:<3}  {r['val_acc']:.3f}   {r['feature']}")
 print(f"\nRandom baseline (31 classes): {1/31:.3f}")
 
-# ── Colour / style maps ────────────────────────────────────────────────────────
+
 COLOR = {
     ("layer0",       "audio_mean"):        "#888888",
     ("layer0",       "audio_last"):        "#cccccc",
@@ -134,7 +126,7 @@ def lookup(records, order, layer, pooling):
             return r["val_acc"]
     return None
 
-# ── Build figure ───────────────────────────────────────────────────────────────
+
 fig = plt.figure(figsize=(22, 14))
 gs = gridspec.GridSpec(1, 2, figure=fig, width_ratios=[2.0, 1.0], wspace=0.35)
 
@@ -143,8 +135,8 @@ gs_r   = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[1], hspace=0.5)
 ax_pf  = fig.add_subplot(gs_r[0])
 ax_af  = fig.add_subplot(gs_r[1])
 
-# ── Left: ranked horizontal bar chart ─────────────────────────────────────────
-sorted_asc = list(reversed(records))          # ascending so best feature is at the top
+
+sorted_asc = list(reversed(records))          # ascending, so the best ends up on top
 bar_colors = [COLOR.get((r["order"], r["pooling"]), "#aaaaaa") for r in sorted_asc]
 bar_accs   = [r["val_acc"] for r in sorted_asc]
 bar_labels = [r["feature"] for r in sorted_asc]
@@ -171,7 +163,7 @@ ax_bar.legend(handles=legend_patches + [
     plt.Line2D([0],[0], color="gray", linestyle=":", label=f"random ({1/31:.3f})")
 ], fontsize=7.5, loc="lower right", framealpha=0.9)
 
-# ── Top-right: prompt_first layer curves (+ layer-0 reference) ────────────────
+
 for pooling, (ls, mk) in LINE.items():
     if pooling not in ("audio_mean", "audio_last"):
         continue
@@ -181,7 +173,7 @@ for pooling, (ls, mk) in LINE.items():
     ax_pf.plot(xs, ys, linestyle=ls, marker=mk, color=COLOR[key],
                label=pooling, linewidth=1.8, markersize=5)
 
-# layer-0 projected reference (stars at x=0)
+# layer-0 reference, the stars at x=0
 for pooling in ("audio_mean", "audio_last"):
     v = lookup(records, "layer0", 0, pooling)
     if v is not None:
@@ -198,7 +190,7 @@ ax_pf.set_ylim(0, 1.05)
 ax_pf.legend(fontsize=7.5, loc="lower right")
 ax_pf.grid(alpha=0.3)
 
-# ── Bottom-right: audio_first layer curves ────────────────────────────────────
+
 for pooling, (ls, mk) in LINE.items():
     key = ("audio_first", pooling)
     xs  = [L for L in LLM_LAYERS]
@@ -216,7 +208,7 @@ ax_af.set_ylim(0, 1.05)
 ax_af.legend(fontsize=7.5, loc="lower right")
 ax_af.grid(alpha=0.3)
 
-# ── Save ───────────────────────────────────────────────────────────────────────
+
 plot_path = OUT_DIR / "feature_ablation_linear_probe.png"
 fig.savefig(plot_path, dpi=150, bbox_inches="tight")
 plt.close(fig)

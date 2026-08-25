@@ -1,23 +1,15 @@
 """
-DSResNet-SE: compact audio-only student.
+DSResNet-SE, the audio-only student.
 
-Pipeline:
-    log-mel [B,1,T,64]
-      -> Conv2D stem (1->c0, stride (2,2))
-      -> 4x ResDS-SE blocks (stem/b1-2 stride (2,2); b3-4 stride (2,1), so the
-         frequency axis stays at ~8 bins, not collapsed to 2 — better
-         speaker-independent generalization)
-      -> global average pooling
-      -> projection head (c4 -> [proj_hidden ->] proj_dim, BatchNorm-normalized)
-      -> n_classes classifier
+log-mel [B,1,T,64] -> conv stem -> 4 ResDS-SE blocks -> global avg pool
+-> projection head -> classifier.
 
-forward() returns (student_z, student_logits) for KD. Parametrized by `channels`
-so the same class serves the strong (default) and small students; proj_dim stays
-64 so the Feature-KD target dim (teacher bottleneck = 64) is matched.
+Blocks 3 and 4 use stride (2,1) instead of (2,2) so the frequency axis stops at
+about 8 bins rather than 2. That generalised better across speakers.
 
-Each ResDS-SE block:
-    x -> dwconv3x3 -> pwconv1x1 -> BN -> ReLU
-      -> dwconv3x3 -> pwconv1x1 -> BN -> SE -> (+ residual) -> ReLU
+forward() gives back (student_z, student_logits), which is what KD needs. The
+`channels` arg is what makes the strong and small students the same class.
+proj_dim stays at 64 to match the teacher bottleneck.
 """
 
 import torch
@@ -25,7 +17,7 @@ import torch.nn as nn
 
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation channel attention (reduction r)."""
+    """squeeze-and-excitation, reduction r."""
 
     def __init__(self, channels, r=8):
         super().__init__()
@@ -34,14 +26,14 @@ class SEBlock(nn.Module):
         self.fc2 = nn.Conv2d(hidden, channels, 1)
 
     def forward(self, x):
-        s = x.mean(dim=(2, 3), keepdim=True)      # squeeze (global avg pool)
+        s = x.mean(dim=(2, 3), keepdim=True)
         s = torch.relu(self.fc1(s))
         s = torch.sigmoid(self.fc2(s))
-        return x * s                               # excite
+        return x * s
 
 
 class DWSepConv(nn.Module):
-    """Depthwise 3x3 then pointwise 1x1 (no activation/BN inside)."""
+    """depthwise 3x3 then pointwise 1x1. no BN or activation in here."""
 
     def __init__(self, cin, cout, stride=1):
         super().__init__()
@@ -79,7 +71,8 @@ class ResDSSEBlock(nn.Module):
 
 
 class DSResNetSE(nn.Module):
-    """channels = (stem_out, b1, b2, b3, b4); proj_hidden=None -> project c4->proj_dim directly."""
+    """channels = (stem_out, b1, b2, b3, b4). proj_hidden=None skips the hidden
+    layer and goes straight to proj_dim."""
 
     def __init__(self, n_mels=64, n_classes=31, channels=(32, 64, 128, 192, 256),
                  proj_hidden=128, proj_dim=64, dropout=0.2, se_r=8):
@@ -104,9 +97,9 @@ class DSResNetSE(nn.Module):
                 nn.Linear(proj_hidden, proj_dim),
             )
         else:
-            self.proj = nn.Linear(c4, proj_dim)           # direct head, e.g. 128 -> 64
+            self.proj = nn.Linear(c4, proj_dim)
 
-        self.bottleneck_norm = nn.BatchNorm1d(proj_dim)   # normalize bottleneck
+        self.bottleneck_norm = nn.BatchNorm1d(proj_dim)
         self.classifier = nn.Linear(proj_dim, n_classes)
 
     def forward(self, x):
@@ -116,9 +109,9 @@ class DSResNetSE(nn.Module):
         x = self.block2(x)
         x = self.block3(x)
         x = self.block4(x)
-        x = x.mean(dim=(2, 3))                      # global average pooling -> [B, c4]
-        z = self.bottleneck_norm(self.proj(x))     # normalized bottleneck -> [B, proj_dim]
-        logits = self.classifier(z)                # [B, n_classes]
+        x = x.mean(dim=(2, 3))                     # [B, c4]
+        z = self.bottleneck_norm(self.proj(x))     # [B, proj_dim]
+        logits = self.classifier(z)
         return z, logits
 
 

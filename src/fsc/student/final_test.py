@@ -1,26 +1,20 @@
 """
-Final held-out TEST evaluation (README_test.md).
+Final held-out test evaluation.
 
-All validation-based selection is frozen. We train the SMALL DSResNet-SE student
-once per method on the TRAINING set, select the best checkpoint on VAL, then
-evaluate that checkpoint ONCE on the held-out FSC TEST split. The student is
-audio-only, so TEST needs no teacher signal.
+Everything selected on val is frozen by this point. Train the small student
+once per method, pick the checkpoint on val, then run that checkpoint on the
+test split exactly once. The student is audio-only so test needs no teacher
+signal at all.
 
-Fixed configuration (from the val ablations / 2x2 tuned run):
-  student = small DSResNet-SE (98K); T = 8; lam_logit = 1.0; lam_feature = 1.0
-  feature loss = cosine; train recipe (epochs/lr/wd/batch/specaug/label-smooth)
-  inherited unchanged from kd_common.
+Config is fixed from the val ablations and the 2x2 run: small DSResNet-SE
+(98K), T=8, lam_logit=1.0, lam_feature=1.0, cosine feature loss. The rest of
+the recipe comes from kd_common unchanged.
 
-Methods: CE-only, Logit-KD, Feature-KD, Full-KD. Single run each (this is the
-final model report; statistical significance comes from the multi-seed val
-ablations, not from this single TEST pass).
+One run per method. Significance comes from the multi-seed val ablations, not
+from this pass.
 
-Prereqs: data/student/logmel_cache/test_logmel.pt (precompute_logmel.py).
-
-Outputs:
-  data/student/final_test_checkpoints/<method>.pt
-  outputs/student/final_test/results.csv      (source of truth)
-  outputs/student/final_test/final_test.png
+needs data/student/logmel_cache/test_logmel.pt first.
+writes outputs/student/final_test/.
 """
 
 import csv
@@ -49,7 +43,7 @@ OUT      = OUTPUTS_ROOT / "fsc" / "student" / "final_test"
 for d in (CKPT_DIR, OUT):
     d.mkdir(parents=True, exist_ok=True)
 
-# Fixed KD config (same as the 2x2 tuned run)
+# same KD config as the 2x2 run
 T_KD        = 8.0
 LAM_LOGIT   = 1.0
 LAM_FEATURE = 1.0
@@ -66,7 +60,7 @@ METHODS = {
 
 
 def load_test():
-    """Test log-mel normalized with TRAIN mean/std (same as val); audio-only."""
+    """test log-mel, normalised with the train mean/std like val is."""
     tr = torch.load(LOGMEL / "train_logmel.pt", weights_only=False)
     te = torch.load(LOGMEL / "test_logmel.pt", weights_only=False)
     mean = tr["mean"].view(1, 1, 1, -1)
@@ -109,14 +103,14 @@ def run(method, train_data, val_data, Xte, yte):
             opt.step()
         sched.step()
 
-        m_val = evaluate(model, Xva, yva)               # VAL: checkpoint selection only
+        m_val = evaluate(model, Xva, yva)               # selection only
         if m_val["macro_f1"] > best_f1:
             best_f1 = m_val["macro_f1"]
             best_val = m_val
             best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-    # Evaluate the selected checkpoint ONCE on the held-out TEST split.
+    # the one and only test pass
     model.load_state_dict(best_state)
     m_test = evaluate(model, Xte, yte)
 
@@ -152,7 +146,7 @@ def main():
                         "params": sz["params"], "fp32_mb": round(sz["fp32_mb"], 2),
                         "int8_mb": round(sz["int8_mb"], 2)})
 
-    # ── results CSV (source of truth) ─────────────────────────────────────────────
+
     csv_path = OUT / "results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["method", "test_acc", "test_macro_f1", "test_weighted_f1",

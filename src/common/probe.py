@@ -1,10 +1,10 @@
-"""Teacher-probe head (dataset-agnostic MLP on frozen features)."""
+"""probe head that sits on the frozen teacher features."""
 
 import torch.nn as nn
 
 
 class Probe(nn.Module):
-    """MLP probe; bottleneck = activation of the last hidden block (feeds the head)."""
+    """bottleneck is the last hidden activation, the thing that feeds the head."""
 
     def __init__(self, in_dim, hidden_dims, n_classes, dropout=0.1):
         super().__init__()

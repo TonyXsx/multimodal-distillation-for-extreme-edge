@@ -4,10 +4,10 @@ MIntRec 2.0 (30-class intent recognition).
 
 Question: how much intent information sits in the AUDIO-token hidden states of
 the multimodal teacher (which attended over text + video)?  This is the go/no-go
-number for using a frozen teacher as a KD target — same role as the FSC
+number for using a frozen teacher as a KD target - same role as the FSC
 teacher-probe stage.
 
-Protocol (mirrors the FSC probe — strict, no leakage):
+Protocol (mirrors the FSC probe - strict, no leakage):
   * dev split is the eval set -> NO early stopping / selection on it.
   * Fixed schedule: 50 epochs, AdamW(lr=1e-3, wd=1e-4), batch 256, CE loss.
   * Standardize with TRAIN mean/std (applied to both train and dev).
@@ -34,14 +34,14 @@ if str(_SRC) not in sys.path:
 from common.config import MINTREC_DATA, MINTREC_OUTPUTS   # noqa: E402
 from common.probe import Probe                            # noqa: E402
 
-# ── Paths ───────────────────────────────────────────────────────────────────────
+
 def build_feat_tag(dtype):
     return f"mintrec2.0_multimodal__qwen2.5-omni-3b-{dtype}__pf_text-video-audio__audiomean"
 
 OUT_DIR = MINTREC_OUTPUTS / "teacher_probe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Fixed hyperparameters (match FSC probe) ──────────────────────────────────────
+
 EPOCHS = 50
 LR = 1e-3
 WEIGHT_DECAY = 1e-4

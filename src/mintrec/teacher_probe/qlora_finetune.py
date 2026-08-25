@@ -22,7 +22,7 @@ but specialized to OUR setup:
 
 ONE fine-tune is enough: from this single adapted model you later extract BOTH
 the logits (logit-KD) and the clean audio_mean (optional feature-KD via a small
-post-hoc projection) — no second fine-tune needed.
+post-hoc projection) - no second fine-tune needed.
 
 INTENDED FOR RUNPOD (Linux, >=24 GB GPU); will NOT fit the 6 GB laptop.
 
@@ -108,7 +108,7 @@ class OmniClassifier(nn.Module):
         if self.pool == "last":
             last = am.sum(1) - 1                          # last non-pad token (mask-safe readout)
             z = h[torch.arange(h.size(0), device=h.device), last]
-        else:                                             # audio_mean (batch size 1) — clean audio block
+        else:                                             # audio_mean (batch size 1) - clean audio block
             s, e = audio_ids
             z = h[0, s + 1:e].mean(0, keepdim=True)
         return self.head(z.to(self.head[0].weight.dtype))

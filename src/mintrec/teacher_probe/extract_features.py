@@ -3,7 +3,7 @@ Frozen multimodal-teacher hidden-representation extraction for MIntRec 2.0.
 
 Quick validation of the PRIVILEGED / cross-modal distillation setup:
 the teacher (Qwen2.5-Omni-3B, 4-bit) sees ALL THREE modalities, but we only
-pool the AUDIO-token hidden states — so a downstream audio-only student has a
+pool the AUDIO-token hidden states - so a downstream audio-only student has a
 target it can (partially) reproduce while still benefiting from the video+text
 context the teacher absorbed via attention.
 
@@ -19,7 +19,7 @@ We feed video frames WITHOUT their audio track (use_audio_in_video=False) and
 supply the clip's audio as a separate `audio` part, so the audio tokens form one
 clean contiguous block at the end (locatable via the audio start/end markers).
 
-Pooling (mirrors the FSC winner — prompt_first · audio_mean · mid/late layers):
+Pooling (mirrors the FSC winner - prompt_first · audio_mean · mid/late layers):
 
     pf_audio_mean_l{L}            for L in [24, 27, 30, 34]
     pf_audio_mean_L24-27-30-34    mean over those four layers
@@ -53,7 +53,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# ── Register FFmpeg DLLs (Windows) — no-op on Linux/RunPod ─────────────────────────
+
 if sys.platform == "win32":
     _ffmpeg_dll_dir = None
     for _p in os.environ.get("PATH", "").split(";"):
@@ -72,13 +72,13 @@ from transformers import (
 )
 from qwen_omni_utils import process_mm_info
 
-# ── make src importable (file-relative, no hardcoded drive) ───────────────────────
+
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from common.config import MINTREC_DATA   # noqa: E402
 
-# ── Paths ─────────────────────────────────────────────────────────────────────────
+
 ANNO_DIR  = MINTREC_DATA / "MIntRec2.0"          # train/dev/test.tsv live here
 VIDEO_DIR = ANNO_DIR / "video"                   # extracted .mp4 clips
 
@@ -87,7 +87,7 @@ def build_feat_tag(dtype):
     """FEAT_TAG carries the teacher precision so fp16/bf16/4bit runs never clash."""
     return f"mintrec2.0_multimodal__qwen2.5-omni-3b-{dtype}__pf_text-video-audio__audiomean"
 
-# ── Model / extraction config ─────────────────────────────────────────────────────
+
 MODEL_NAME    = "Qwen/Qwen2.5-Omni-3B"
 LLM_LAYERS    = [24, 27, 30, 34]                 # FSC-winning mid/late layers
 MEAN_COMBO    = "L24-27-30-34"
@@ -99,7 +99,7 @@ AUDIO_START_ID_DEFAULT = 151647
 AUDIO_END_ID_DEFAULT   = 151648
 
 # Labels are derived from the TSVs at runtime (see build_label2id) rather than
-# hard-coded — the MMLA label strings may differ in casing/wording from the
+# hard-coded - the MMLA label strings may differ in casing/wording from the
 # official benchmark config, and we must not silently drop a whole class.
 
 # Task prompt carries the transcript (the 'text' modality) + a brief framing.
@@ -110,7 +110,6 @@ TASK_PROMPT_TEMPLATE = (
 )
 
 
-# ── Annotation loading + video mapping (mirrors the notebook) ──────────────────────
 def load_split_df(name):
     df = pd.read_csv(ANNO_DIR / f"{name}.tsv", sep="\t", dtype=str, keep_default_na=False)
     df.columns = [c.strip() for c in df.columns]            # id, text, label, dimension
@@ -141,12 +140,11 @@ def find_video(row, stem2path):
     return None
 
 
-# ── Model loading ───────────────────────────────────────────────────────────────────
 def load_teacher(dtype="bf16"):
-    """dtype in {bf16, 4bit}. bf16 = full precision (cleanest KD target — matches
+    """dtype in {bf16, 4bit}. bf16 = full precision (cleanest KD target - matches
     the teacher's training dtype, needs ~7GB VRAM); 4bit = bnb NF4 (low-VRAM
     fallback, e.g. a 6GB laptop GPU)."""
-    # sdpa (not eager): mathematically equivalent softmax attention, but fused —
+    # sdpa (not eager): mathematically equivalent softmax attention, but fused -
     # it never materializes the full [heads, seq, seq] fp32 score matrix, so memory
     # is ~linear instead of quadratic in seq_len. hidden_states are unchanged.
     # (Long MIntRec clips = many vision+audio tokens; eager OOMs on a 22GB GPU.)
@@ -176,7 +174,6 @@ def get_special_id(model, name, default):
     return default
 
 
-# ── Token helpers & pooling ─────────────────────────────────────────────────────────
 def find_audio_indices(input_ids, start_id, end_id):
     ids = input_ids[0].tolist()
     s = ids.index(start_id)
@@ -204,7 +201,6 @@ def pool_audio_mean(hidden_states, audio_idx):
     return feats
 
 
-# ── Single-sample extraction ─────────────────────────────────────────────────────────
 def build_inputs(processor, model, transcript, video_path, wav):
     """prompt_first, content order = [text, video(frames-only), audio]; audio LAST."""
     conversation = [{
@@ -241,7 +237,6 @@ def extract_sample(model, processor, transcript, video_path, wav, audio_start_id
     return feats, meta
 
 
-# ── Sharded checkpointing (resume-safe, ported from FSC extractor) ─────────────────
 def _flush_shard(shard_dir, shard_idx, feat_bank, labels, sample_ids, metadata):
     shard = {
         "labels": torch.tensor(labels, dtype=torch.long),
@@ -284,7 +279,6 @@ def _count_done(shard_dir):
     return done
 
 
-# ── Split processing ───────────────────────────────────────────────────────────────
 def process_split(model, processor, df, stem2path, label2id, audio_start_id, audio_end_id,
                   shard_dir, limit=None):
     n = len(df) if limit is None else min(limit, len(df))
@@ -334,7 +328,6 @@ def process_split(model, processor, df, stem2path, label2id, audio_start_id, aud
     return _load_shards(shard_dir)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────────
 SPLITS = {"train": "train_features.pt", "dev": "dev_features.pt"}
 
 

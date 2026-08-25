@@ -1,21 +1,18 @@
 """
-Student KD ablation: same DSResNet-SE, four training losses (strong student,
-100% data, single seed, ORIGINAL untuned KD defaults T=2 / lam_logit=0.5).
+KD ablation on the student: one DSResNet-SE, four losses. Strong student, all
+the data, one seed, and the untuned KD defaults (T=2, lam_logit=0.5).
 
-    CE-only   :  L_ce
-    Logit-KD  :  L_ce + lam_logit * L_logit
-    Feature-KD:  L_ce + lam_feature * L_feature
-    Full-KD   :  L_ce + lam_logit * L_logit + lam_feature * L_feature
+    CE-only    L_ce
+    Logit-KD   L_ce + lam_logit * L_logit
+    Feature-KD L_ce + lam_feature * L_feature
+    Full-KD    both
 
-Shared infra (data, teacher signals, losses, SpecAugment, evaluation, constants)
-lives in kd_common.py. The definitive multi-seed, tuned-HP study is
-train_student_2x2.py; KD-HP tuning is tune_kd_hparams.py.
+Data, teacher signals, losses, eval and the constants all come from
+kd_common.py. This is the early single-seed run; the proper multi-seed one with
+tuned HPs is train_student_2x2.py, and the tuning itself is tune_kd_hparams.py.
 
-Outputs:
-  data/student/checkpoints/<exp>_best.pt          (model artifacts)
-  outputs/student/main_ablation/results.csv       (source of truth)
-  outputs/student/main_ablation/results.md
-  outputs/student/main_ablation/student_kd_ablation.png
+writes checkpoints to data/student/checkpoints/ and results to
+outputs/student/main_ablation/.
 """
 
 import csv
@@ -39,13 +36,13 @@ from fsc.student.kd_common import (                                # noqa: E402
     EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, DROPOUT, LABEL_SMOOTH, SEED, DEVICE,
 )
 
-# ── Output paths ──────────────────────────────────────────────────────────────────
+
 CKPT_DIR = DATA / "student" / "checkpoints"
 OUT      = OUTPUTS_ROOT / "fsc" / "student" / "main_ablation"
 for d in (CKPT_DIR, OUT):
     d.mkdir(parents=True, exist_ok=True)
 
-# ── Experiment-specific KD hyperparameters (original untuned defaults) ─────────────
+
 T           = 2.0
 LAM_LOGIT   = 0.5
 LAM_FEATURE = 1.0
@@ -55,7 +52,6 @@ USE_LOGIT   = {"ce_only": False, "logit_kd": True,  "feature_kd": False, "full_k
 USE_FEATURE = {"ce_only": False, "logit_kd": False, "feature_kd": True,  "full_kd": True}
 
 
-# ── Train one experiment ──────────────────────────────────────────────────────────
 def train_experiment(exp, train_data, val_data):
     Xtr, ytr, ztr, ltr = train_data
     Xva, yva, _, _ = val_data
@@ -105,14 +101,13 @@ def train_experiment(exp, train_data, val_data):
             print(f"    epoch {epoch+1:3d}/{EPOCHS}  loss={running/n:.4f}  "
                   f"val_acc={m['acc']:.4f}  macroF1={m['macro_f1']:.4f}")
 
-    # Save best-by-val-macroF1 checkpoint.
+    # keep the best val macro-F1 checkpoint
     torch.save({"exp": exp, "state_dict": best_state, "best_epoch": best_epoch,
                 "metrics": best_metrics, "history": history},
                CKPT_DIR / f"{exp}_best.pt")
     return best_metrics, best_epoch, history
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     print(f"Device: {DEVICE}")
     sz = model_summary(DSResNetSE())
@@ -130,7 +125,7 @@ def main():
                         "params": sz["params"], "fp32_mb": round(sz["fp32_mb"], 2),
                         "int8_mb": round(sz["int8_mb"], 2)})
 
-    # ── results CSV (source of truth) + MD ────────────────────────────────────────
+
     csv_path = OUT / "results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["exp", "acc", "macro_f1", "weighted_f1",

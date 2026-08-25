@@ -1,5 +1,5 @@
 """
-LOCAL frozen-teacher hidden-feature extraction for MIntRec2.0 — parametrized.
+LOCAL frozen-teacher hidden-feature extraction for MIntRec2.0 - parametrized.
 
 Same teacher / pooling as the production extract_features.py, but built to run on a
 small local GPU (tested: 6.4 GB RTX 3060, 4-bit, ~2.3 s/sample) and to sweep the
@@ -76,7 +76,7 @@ EMPTY_CACHE_EVERY = 5
 AUDIO_START_ID_DEFAULT = 151647
 AUDIO_END_ID_DEFAULT   = 151648
 
-# ── prompts ─────────────────────────────────────────────────────────────────────────
+
 _BASE = ("You are analyzing a short TV-show clip to recognize the speaker's intent "
          "among 30 fine-grained intent classes. ")
 _AWARE_VID = ("Pay close attention to HOW it is said — the speaker's tone of voice, "
@@ -101,7 +101,6 @@ def build_feat_tag(dtype, modalities, frames, prompt):
     return f"mintrec2.0__qwen2.5-omni-3b-{dtype}__{modtag}__{prompt}__audiomean"
 
 
-# ── annotations (mirrors production extractor) ───────────────────────────────────────
 def load_split_df(name):
     df = pd.read_csv(ANNO_DIR / f"{name}.tsv", sep="\t", dtype=str, keep_default_na=False)
     df.columns = [c.strip() for c in df.columns]
@@ -130,7 +129,6 @@ def find_video(row, s2p):
     return None
 
 
-# ── media (cv2 frame sampling + audio from mp4) ──────────────────────────────────────
 def _resize_max_side(img, ms):
     h, w = img.shape[:2]
     sc = ms / max(h, w)
@@ -168,7 +166,6 @@ def load_audio(path):
     return wav
 
 
-# ── model ─────────────────────────────────────────────────────────────────────────
 def load_teacher(dtype):
     kw = dict(device_map="auto", attn_implementation="sdpa")
     if dtype == "4bit":
@@ -238,7 +235,6 @@ def extract_sample(model, proc, text, frames, wav, a0, a1):
     return feats, {"seq_len": int(inp["input_ids"].shape[1]), "num_audio_tokens": len(audio_idx)}
 
 
-# ── sharding (ported from production extractor) ──────────────────────────────────────
 def _flush_shard(shard_dir, idx, fb, labels, ids, meta):
     shard = {"labels": torch.tensor(labels, dtype=torch.long), "sample_ids": ids, "metadata": meta,
              "features": {k: torch.stack(v, 0) for k, v in fb.items()}}

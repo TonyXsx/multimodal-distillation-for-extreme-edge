@@ -1,27 +1,19 @@
 """
-Precompute 64-bin log-mel features for the student (one-time).
+Cache 64-bin log-mel for the student. Run once.
 
-Decoding FSC audio + computing mel on every epoch would dominate runtime
-(~hours). Instead we decode once, compute fixed-length log-mel, and cache to
-disk so the 4-ablation x N-epoch student training reads from RAM.
+Decoding audio and computing mel every epoch takes hours, so do it once and
+keep it on disk. The ablation training then reads straight from RAM.
 
-Alignment: samples are kept in FSC order (same as the teacher feature files),
-so cache index i corresponds to teacher signal index i. We also store the file
-id per sample and assert-match against the teacher features at train time.
+Samples stay in FSC order, same as the teacher feature files, so cache index i
+matches teacher index i. The file id is stored per sample and checked against
+the teacher features at train time.
 
-Mel config: 16 kHz, n_fft=400 (25 ms), hop=160 (10 ms), n_mels=64, fmax=8000.
-Waveforms are padded/truncated to MAX_SECONDS so every sample has T frames.
+mel: 16 kHz, n_fft 400 (25 ms), hop 160 (10 ms), 64 mels, fmax 8000. Waveforms
+padded or cut to MAX_SECONDS so T is fixed.
 
-Output:
-    data/student/logmel_cache/
-        train_logmel.pt   { logmel:[N,1,T,64] fp16, labels, sample_ids, mean[64], std[64] }
-        val_logmel.pt     { logmel:[N,1,T,64] fp16, labels, sample_ids }
-        test_logmel.pt    { logmel:[N,1,T,64] fp16, labels, sample_ids }
-        config.json
-
-Splits whose cache file already exists are skipped (idempotent), so adding the
-test split does not recompute train/val. test is for final eval only — the
-student is audio-only, so no teacher signal is needed for test.
+writes data/student/logmel_cache/{train,val,test}_logmel.pt + config.json.
+Splits that already exist are skipped, so adding test doesn't redo train/val.
+test is final eval only, no teacher signal needed there.
 """
 
 import io
@@ -35,7 +27,7 @@ import torch
 from datasets import Audio, load_dataset
 from tqdm import tqdm
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+
 import sys
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
@@ -43,18 +35,18 @@ if str(_SRC) not in sys.path:
 from common.config import DATA_ROOT                          # noqa: E402
 
 DATA     = DATA_ROOT
-LABEL_CFG = DATA / "fsc_small_ablation" / "config.json"     # reuse identical label2id
+LABEL_CFG = DATA / "fsc_small_ablation" / "config.json"     # same label2id
 OUT_DIR  = DATA / "student" / "logmel_cache"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Mel config ──────────────────────────────────────────────────────────────────
+
 SR          = 16000
 N_FFT       = 400
 HOP         = 160
 N_MELS      = 64
 FMAX        = 8000
 MAX_SECONDS = 3.0
-TARGET_LEN  = int(MAX_SECONDS * SR)         # pad/truncate waveforms to this
+TARGET_LEN  = int(MAX_SECONDS * SR)
 
 
 def wav_to_logmel(wav):
@@ -102,7 +94,7 @@ def process(ds):
     return X, torch.tensor(labels, dtype=torch.long), ids, n_trunc
 
 
-# (hf_split, output filename, save train normalization stats)
+# (hf_split, out filename, save norm stats)
 SPLITS = [("train", "train_logmel.pt", True),
           ("validation", "val_logmel.pt", False),
           ("test", "test_logmel.pt", False)]
@@ -122,7 +114,7 @@ def main():
         n_frames = int(X.shape[2])
         print(f"{hf_split}: {tuple(X.shape)}  truncated(> {MAX_SECONDS}s)={trunc}")
         payload = {"logmel": X.to(torch.float16), "labels": y, "sample_ids": ids}
-        if save_stats:  # train only: per-bin normalization stats, applied to all splits at train/eval time
+        if save_stats:  # train only, per-bin stats get applied to every split later
             payload["mean"] = X.mean(dim=(0, 1, 2))
             payload["std"] = X.std(dim=(0, 1, 2)).clamp_min(1e-6)
         torch.save(payload, out_path)
