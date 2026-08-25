@@ -1,7 +1,7 @@
 """
 Frozen HuBERT-large as an audio-only teacher. This is the control for the Qwen
 one, so the KD comparison can separate "any strong frozen teacher helps" from
-"the prompted multimodal teacher helps". README in this folder has the rest.
+"the prompted multimodal teacher helps".
 
 Model is facebook/hubert-large-ll60k, the plain SSL checkpoint (masked
 prediction of kmeans cluster ids over 60k h of unlabelled Libri-Light). No text

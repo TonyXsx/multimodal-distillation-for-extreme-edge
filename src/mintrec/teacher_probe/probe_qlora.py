@@ -1,17 +1,15 @@
 """
-Linear/MLP probe on the QLoRA-adapted teacher features (MIntRec2.0, 30-class intent).
+Probes the adapted teacher features after the QLoRA fine-tune.
 
-Answers two things after the one QLoRA fine-tune:
-  1. How strong is the adapted teacher's readout?  -> argmax of the saved `logits`
-     (this is the teacher itself, no probe needed; should match training dev ~0.63).
-  2. Did the adapted hidden features become a better KD target than the FROZEN ones,
-     and did the CLEAN audio_mean ride along?  -> probe audio_mean_l27 / audio_mean_final
-     / last_token, train on train, eval on dev, side-by-side with the frozen baseline.
+Two questions. How strong is the adapted readout - just the argmax of the saved
+logits, no probe needed, should land near the training dev of ~0.63. And did the
+adapted hidden features become a better KD target than the frozen ones, with the
+clean audio_mean coming along for the ride - probe audio_mean_l27,
+audio_mean_final and last_token, train on train, eval on dev, next to the frozen
+baseline.
 
-Strict protocol (same as the frozen probe): standardize with TRAIN stats, fixed
-50-epoch AdamW(1e-3, wd 1e-4), batch 256, CE, no dev selection.
-
-Outputs: outputs/mintrec/teacher_probe/qlora_probe.csv  (+ printed table)
+Same protocol as the frozen probe: standardised on train stats, fixed 50 epochs,
+AdamW(1e-3, wd 1e-4), batch 256, CE, nothing selects on dev.
 """
 
 import csv
@@ -82,20 +80,21 @@ def main():
     print(f"Device {DEVICE} | train {len(ytr)} dev {len(yev)} | classes {nc}\n")
 
     results = []
-    # (0) teacher's OWN readout: argmax of saved logits (no probe) - should match training dev
+    # 0. the teacher readout itself, argmax of the saved logits. should match dev
     dev_logits_acc = (dv["features"]["logits"].float().argmax(1) == yev).float().mean().item()
     dev_logits_f1 = f1_score(yev.numpy(), dv["features"]["logits"].float().argmax(1).numpy(), average="macro")
     print(f"[teacher readout] dev_acc={dev_logits_acc:.4f} macroF1={dev_logits_f1:.4f}  (argmax of logits, no probe)\n")
     results.append({"source": "QLoRA", "feature": "logits(argmax)", "arch": "-", "arch_desc": "teacher readout",
                     "dev_acc": round(dev_logits_acc, 4), "dev_macro_f1": round(dev_logits_f1, 4), "train_acc": ""})
 
-    # (1) probe the adapted features (KD-target candidates)
+    # 1. probe the adapted features, the KD target candidates
     print("ADAPTED (QLoRA) features:")
     for key in ("audio_mean_l27", "audio_mean_final", "last_token"):
         if key in tr["features"]:
             probe_feature(key, tr["features"][key], ytr, dv["features"][key], yev, nc, results, "QLoRA")
 
-    # (2) frozen baseline for side-by-side (note: different input order/pooling - indicative, not identical pipeline)
+    # 2. frozen baseline alongside. different input order and pooling though, so
+    #    it is indicative rather than the same pipeline
     if (FROZEN_DIR / "train_features.pt").exists():
         ftr = torch.load(FROZEN_DIR / "train_features.pt", weights_only=False)
         fdv = torch.load(FROZEN_DIR / "dev_features.pt", weights_only=False)

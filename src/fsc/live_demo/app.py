@@ -1,9 +1,10 @@
 """
 Gradio mic demo for the tiny FSC student.
 
-Sanity check only, not an evaluation. The README in this folder has the 31
-intents, some commands to try, and why live mic accuracy comes out lower than
-the test set numbers (different speaker, mic and room).
+Sanity check only, not an evaluation. The vocabulary is the closed 31-intent
+FSC set, so anything outside it gets forced into the nearest one. Live mic
+accuracy comes out lower than the test numbers because the speaker, mic and
+room are all different from the training data.
 
 The preprocessing is imported rather than rewritten, so it can't drift from
 what the model was trained on:

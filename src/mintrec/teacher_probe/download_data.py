@@ -1,20 +1,18 @@
 """
-Download MIntRec2.0 raw data (annotations + packed videos) into data/mintrec/.
+Downloads the MIntRec2.0 annotations and videos into data/mintrec/.
 
-Source: HuggingFace THUIAR/MMLA-Datasets -> MIntRec2.0/  (public, no token needed;
-set HF_TOKEN only for faster rate limits). ~9 GB video tarball. Idempotent: HF
-resumes interrupted downloads, and tar extraction is skipped once .mp4 are present.
-
-Lays files out as (data/ is junctioned to E:):
+From THUIAR/MMLA-Datasets on HuggingFace, public so no token needed - set
+HF_TOKEN only if you want better rate limits. The video tarball is about 9 GB.
+HF resumes interrupted downloads and the tar extraction is skipped once the mp4s
+are there, so re-running is fine.
 
     data/mintrec/MIntRec2.0/
         train.tsv  dev.tsv  test.tsv
         MIntRec2.0_video.tar.gz
-        video/ ... *.mp4         (extracted clips, named MIntRec2.0_{dia}_{utt}.mp4)
+        video/*.mp4
 
-Usage:
     python src/mintrec/teacher_probe/download_data.py
-    python src/mintrec/teacher_probe/download_data.py --no-extract   # fetch tar only
+    python src/mintrec/teacher_probe/download_data.py --no-extract   # tar only
 """
 
 import argparse

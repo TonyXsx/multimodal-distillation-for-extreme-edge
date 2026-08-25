@@ -1,18 +1,19 @@
 """
-Unattended overnight driver: run the local MIntRec2.0 feature extractions one after
-another (the 6.4 GB GPU fits only one at a time). Each variant is resume-safe, so on
-any non-zero exit we just retry - it continues from the last shard. A variant that
-keeps failing is given up on and we move to the next, so one bad run can't block the
-rest. Per-sample failures are already skipped inside the extractor.
+Runs the local extractions back to back overnight. The 6.4 GB GPU only fits one
+at a time.
 
-Order = cheapest-first so at least one full variant is guaranteed done early:
-    1. ta_plain    (audio+transcript, no video)   ~5 h
-    2. tva_aware   (text+video+audio, aware prompt) ~8-10 h
-    3. tva_plain   (text+video+audio, plain prompt) ~8-10 h
+Every variant is resumable, so a non-zero exit just gets retried and it picks up
+from the last shard. If one keeps failing it gets given up on and the next
+starts, so a bad run can't block the rest. Per-sample failures are already
+skipped inside the extractor.
 
-Logs:
-    outputs/mintrec/overnight.log        master progress (one line per attempt)
-    outputs/mintrec/<name>.log           full stdout/stderr of each variant
+Cheapest first, so at least one variant is definitely finished early:
+    1. ta_plain    audio+transcript, no video       ~5 h
+    2. tva_aware   text+video+audio, aware prompt   ~8-10 h
+    3. tva_plain   text+video+audio, plain prompt   ~8-10 h
+
+overnight.log gets one line per attempt, each variant gets its own log with the
+full output.
 """
 
 import datetime

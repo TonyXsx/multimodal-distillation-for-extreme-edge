@@ -1,5 +1,5 @@
 """
-Final test run for the HuBERT baseline. README in this folder has the why.
+Final test run for the HuBERT baseline, the audio-only teacher control.
 
 Close mirror of fsc/student/final_test.py: same small student, same KD
 hyperparameters (T=8, lam_logit=1.0, lam_feature=1.0), same four methods, same

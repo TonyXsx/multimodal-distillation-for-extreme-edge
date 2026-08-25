@@ -11,10 +11,10 @@ with a smaller channel plan and an RGB stem, so both branches look the same.
 Per-frame features get mean-pooled over the fixed frame count into one clip
 embedding.
 
-Budget, see README: audio-only stays near FSC's 0.37 MiB, and the AV student
-should stay under ~1 MiB (262,144 params), with a fallback ceiling of ~3 MiB if
-1 MiB turns out too small to be useful. Run
-`python -m mintrec.student.models` for the exact counts.
+Budget: audio-only stays near FSC's 0.37 MiB, and the AV student should stay
+under ~1 MiB (262,144 params), with a fallback ceiling of ~3 MiB if 1 MiB turns
+out too small to be useful. Run `python -m mintrec.student.models` for the
+exact counts.
 """
 
 import torch

@@ -1,39 +1,34 @@
 """
-QLoRA fine-tune Qwen2.5-Omni (Thinker) for MIntRec2.0 intent recognition.
+QLoRA fine-tune of the Qwen2.5-Omni Thinker for MIntRec2.0 intent.
 
-Turns the WEAK frozen teacher (~58% dev/test from the probe) into a strong,
-task-adapted teacher whose hidden states become a much better KD target. The
-recipe is adapted from the discriminative-readout MSA paper (arXiv 2606.05713)
-but specialized to OUR setup:
+Turns the weak frozen teacher (~58% dev/test from the probe) into an adapted one
+whose hidden states are a much better KD target. Recipe adapted from the
+discriminative-readout MSA paper (arXiv 2606.05713) but changed for our setup:
 
-  * task        : 30-class single-label intent -> classification head + CE
-                  (the paper does scalar regression + MAE; we do classification)
-  * input order : instruction -> AUDIO -> video -> transcript -> "Intent:" (readout)
-                  audio is placed FIRST (right after the instruction) so the
-                  audio tokens stay the CLEANEST possible (they attend only to the
-                  task instruction, NOT to video/transcript). This keeps a clean,
-                  student-reproducible audio_mean feature for later feature-KD,
-                  while the readout (last token) still sees ALL modalities -> the
-                  privileged text/video info flows to the student via the LOGITS
-                  (generalized distillation: privilege travels through soft labels,
-                  not through forcing the student to reproduce a contaminated feat).
-  * readout     : hidden state of the last non-padding token (final layer) -> MLP.
-  * backbone    : 4-bit NF4 QLoRA, Talker dropped, only LoRA + head trained.
+  task        30-class single label, so a classification head and CE. the paper
+              does scalar regression with MAE.
+  input order instruction -> audio -> video -> transcript -> "Intent:" readout.
+              audio goes first, right after the instruction, so the audio tokens
+              stay as clean as possible - they only attend to the instruction,
+              not to video or transcript. that keeps a student-reproducible
+              audio_mean for feature-KD, while the readout token at the end
+              still sees everything, so the privileged text/video information
+              reaches the student through the logits instead of by forcing it to
+              copy a contaminated feature.
+  readout     last non-padding token, final layer, into an MLP.
+  backbone    4-bit NF4 QLoRA, talker dropped, only LoRA + head trained.
 
-ONE fine-tune is enough: from this single adapted model you later extract BOTH
-the logits (logit-KD) and the clean audio_mean (optional feature-KD via a small
-post-hoc projection) - no second fine-tune needed.
+One fine-tune is enough. Both the logits and the clean audio_mean come out of
+this same adapted model later, no second run needed.
 
-INTENDED FOR RUNPOD (Linux, >=24 GB GPU); will NOT fit the 6 GB laptop.
+Meant for RunPod (Linux, 24 GB+). Won't fit the 6 GB laptop.
 
-Setup (RunPod):
     pip install "transformers>=4.52" accelerate bitsandbytes peft \
                 "qwen-omni-utils[decord]" librosa soundfile av opencv-python-headless scikit-learn
-    python src/mintrec/teacher_probe/download_data.py        # if data not present
+    python src/mintrec/teacher_probe/download_data.py        # if data isn't there
 
-Smoke then full:
-    python src/mintrec/teacher_probe/qlora_finetune.py --limit 40 --epochs 1   # sanity
-    python src/mintrec/teacher_probe/qlora_finetune.py                         # full (defaults below)
+    python src/mintrec/teacher_probe/qlora_finetune.py --limit 40 --epochs 1
+    python src/mintrec/teacher_probe/qlora_finetune.py
 """
 
 import argparse
@@ -90,7 +85,7 @@ def get_hidden_size(model):
 
 
 class OmniClassifier(nn.Module):
-    """LoRA-adapted Qwen Thinker + pooled token -> MLP classification head (30 classes)."""
+    """LoRA Thinker + pooled token -> MLP head, 30 classes."""
 
     def __init__(self, thinker, hidden, n_classes, pool="last", head_hidden=256, dropout=0.2):
         super().__init__()
@@ -103,12 +98,12 @@ class OmniClassifier(nn.Module):
 
     def forward(self, inputs, audio_ids=None):
         out = self.thinker(**inputs, output_hidden_states=True, return_dict=True)
-        h = out.hidden_states[-1]                        # [B, T, H] final layer
+        h = out.hidden_states[-1]                        # [B, T, H], final layer
         am = inputs["attention_mask"]
         if self.pool == "last":
-            last = am.sum(1) - 1                          # last non-pad token (mask-safe readout)
+            last = am.sum(1) - 1                          # last non-pad token, mask-safe
             z = h[torch.arange(h.size(0), device=h.device), last]
-        else:                                             # audio_mean (batch size 1) - clean audio block
+        else:                                             # audio_mean, batch 1, clean block
             s, e = audio_ids
             z = h[0, s + 1:e].mean(0, keepdim=True)
         return self.head(z.to(self.head[0].weight.dtype))
@@ -120,7 +115,7 @@ def load_backbone(model_name, compute_dtype=torch.bfloat16):
     proc = Qwen2_5OmniProcessor.from_pretrained(model_name)
     model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_name, device_map={"": 0}, attn_implementation="sdpa", quantization_config=qc)
-    for attr in ("talker", "token2wav"):                 # free the speech-gen half (Thinker-only)
+    for attr in ("talker", "token2wav"):                 # drop the speech-gen half
         if hasattr(model, attr):
             try:
                 delattr(model, attr)
@@ -130,7 +125,7 @@ def load_backbone(model_name, compute_dtype=torch.bfloat16):
 
 
 def build_inputs(proc, device, wav, frames, transcript, args):
-    # order: instruction -> AUDIO (clean) -> video -> transcript -> "Intent:" (readout last)
+    # instruction -> audio (clean) -> video -> transcript -> "Intent:" last
     content = [{"type": "text", "text": INSTRUCTION},
                {"type": "audio", "audio": wav}]
     if frames is not None:

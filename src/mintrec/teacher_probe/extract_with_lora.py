@@ -1,26 +1,24 @@
 """
-Extract KD targets from the QLoRA-adapted teacher (LOCAL-friendly).
+Pulls the KD targets out of the QLoRA-adapted teacher. Runs locally.
 
-After ONE QLoRA fine-tune (qlora_finetune.py, run on RunPod), copy the small
-adapter folder back to this machine and run this script. It loads the local base
-Qwen2.5-Omni-3B (already in hf_cache) + the LoRA adapter + the trained head, then
-for every MIntRec2.0 utterance dumps, in ONE forward pass:
+After the one fine-tune on RunPod, copy the adapter folder back here and run
+this. It loads the local base Qwen2.5-Omni-3B, the adapter and the trained head,
+then for every utterance dumps in one forward pass:
 
-    logits            [30]    -> logit-KD target  (head on the readout token)
-    last_token        [H]     -> the readout representation (final layer)
-    audio_mean_final  [H]     -> CLEAN audio feature (audio block, final layer)
-    audio_mean_l27    [H]     -> clean audio feature at layer 27 (frozen-best layer)
+    logits            [30]  logit-KD target, head on the readout token
+    last_token        [H]   the readout representation, final layer
+    audio_mean_final  [H]   clean audio feature, final layer
+    audio_mean_l27    [H]   same at layer 27, the best frozen layer
 
-Input order is reconstructed IDENTICALLY to training from the saved config.json
-(instruction -> audio -> video -> transcript -> "Intent:"). Fits the 6 GB laptop
-(4-bit, sub-sampled frames). Sharded + resume-safe.
+The input order gets rebuilt from the saved config.json so it matches training
+exactly. Fits the 6 GB laptop at 4-bit with subsampled frames. Sharded and
+resumable.
 
-Usage:
     python src/mintrec/teacher_probe/extract_with_lora.py \
         --adapter data/mintrec/teacher_qlora/3b_tva_tr_last_r32/adapter_ep3 \
         --head    data/mintrec/teacher_qlora/3b_tva_tr_last_r32/head_ep3.pt \
         --split all
-    # smoke first:  --split dev --limit 5
+    # smoke first with --split dev --limit 5
 """
 
 import argparse
@@ -130,7 +128,7 @@ def main():
 
     adapter_dir = Path(args_cli.adapter)
     cfg = json.load(open(adapter_dir.parent / "config.json", encoding="utf-8"))
-    # reconstruct the exact training input config
+    # rebuild the exact training input config
     args = SimpleNamespace(frames=cfg["frames"], modalities=cfg["modalities"],
                            use_transcript=cfg["use_transcript"], limit=args_cli.limit)
     model_name = cfg["model_name"]

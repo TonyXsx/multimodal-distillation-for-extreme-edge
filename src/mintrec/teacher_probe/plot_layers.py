@@ -1,10 +1,8 @@
 """
-Per-LAYER view of the teacher-probe results: which pooled layer carries the most
-intent signal? Reads outputs/mintrec/teacher_probe/results.csv, fixes the head to
-A2 (the sweet spot from the capacity sweep), and plots dev acc / macroF1 per
-feature (L24, L27, L30, L34, mean-combo), one line per feature set.
+Which pooled layer carries the most intent signal?
 
-Outputs: outputs/mintrec/teacher_probe/probe_layers.png  (+ printed per-layer mean)
+Reads the probe results, fixes the head at A2 (the sweet spot from the capacity
+sweep) and plots dev acc / macro-F1 per layer, one line per feature set.
 """
 import csv
 import sys
@@ -54,7 +52,7 @@ def main():
     png = OUT_DIR / "probe_layers.png"
     fig.savefig(png, dpi=150, bbox_inches="tight")
 
-    # per-layer mean across the 4 feature sets
+    # mean across the four feature sets, per layer
     print(f"per-layer mean across {len(variants)} feature sets (head {HEAD}):")
     print(f"{'layer':<16}{'dev_acc':<10}{'macroF1':<10}")
     agg = defaultdict(lambda: [[], []])

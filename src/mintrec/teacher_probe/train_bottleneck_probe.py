@@ -1,44 +1,31 @@
 """
-Bottleneck probes on the QLoRA-adapted MIntRec2.0 teacher (2048 -> 64 -> 30).
+Bottleneck probes on the adapted MIntRec2.0 teacher, 2048 -> 64 -> 30.
 
-Mirrors fsc/teacher_probe/train_probe.py's B2 recipe EXACTLY (same fixed
-hyperparameters, same "dev is the final eval set here, no early stopping"
-rule), so the resulting 64-dim bottleneck can serve as a Feature-KD target
-for the MIntRec student in exactly the same shape FSC used (student
-proj_dim = 64).
+Same B2 recipe as fsc/teacher_probe/train_probe.py, same fixed hyperparameters
+and the same "dev is the final eval set, no early stopping" rule, so the 64-d
+bottleneck can be a feature-KD target in exactly the shape FSC used.
 
-Why this stage exists: extract_with_lora.py / probe_qlora.py already gave us
-RAW 2048-dim teacher hidden states (`audio_mean_l27`, `last_token`) and a
-strong 30-way `logits` head, but no compact bottleneck representation of
-those hidden states -- unlike FSC, where teacher_probe/train_probe.py's B2
-checkpoint IS the Feature-KD target. This script closes that gap for
-MIntRec by training the same B2-shaped probe on each of the two candidate
-hidden-state features, so Feature-KD has a proper low-dim target instead of
-raw 2048-dim vectors.
+Why this stage exists: extract_with_lora.py and probe_qlora.py gave us raw
+2048-d hidden states (audio_mean_l27, last_token) and a strong 30-way logits
+head, but no compact version of those hidden states. On FSC the B2 checkpoint
+is itself the feature-KD target, so this closes the same gap for MIntRec by
+training a B2-shaped probe on each of the two candidate features.
 
-Two independent probes are trained (bottleneck dim fixed at 64, matching the
-student's proj_dim so kd_feature_loss needs no extra projector):
-  1. audio_mean_l27  -> the CLEAN audio-only-attending feature (used by the
-     audio-only student's "feature_kd_audiohidden" / "full_kd_audiohidden").
-  2. last_token      -> the privileged, all-modality readout feature (used by
-     the audio-only student's "..._lasttoken" variants AND the audio-visual
-     student's fusion-vs-last_token alignment).
+Two probes, bottleneck fixed at 64 to match the student proj_dim so
+kd_feature_loss needs no extra projector:
 
-Logit-KD does NOT use either probe's own classifier output -- it uses the
-already-extracted `logits` feature directly (the real QLoRA-tuned
-classification head, 65.3% test acc, stronger than a from-scratch probe
-would be). These two probes exist only to produce a compact FEATURE target.
+  audio_mean_l27  the clean audio-attending feature, used by the audio-only
+                  student's "..._audiohidden" runs
+  last_token      the privileged all-modality readout, used by the
+                  "..._lasttoken" runs and the AV fusion alignment
 
-Protocol (identical constants to fsc/teacher_probe/train_probe.py):
-  50 epochs, AdamW(lr=1e-3, wd=1e-4), batch 256, dropout 0.1, CE loss.
-  Standardize with TRAIN mean/std. Report eval acc/macro-F1 ONCE on FSC ...
-  err, MIntRec2.0 DEV (no early stopping / model selection on it). TEST
-  features are never loaded here -- same no-leakage discipline as FSC.
+Logit-KD does not use either probe's classifier output, it uses the extracted
+logits directly - that's the real tuned head at 65.3% test acc, stronger than a
+from-scratch probe. These two exist only to give feature-KD a low-dim target.
 
-Outputs:
-  data/mintrec/teacher_probe/qlora_bottleneck/<feature>/checkpoint.pt
-  data/mintrec/teacher_probe/qlora_bottleneck/<feature>/bottleneck_reps.pt   (train+dev)
-  outputs/mintrec/teacher_probe/bottleneck_results.csv
+Same constants as the FSC probe: 50 epochs, AdamW(1e-3, wd 1e-4), batch 256,
+dropout 0.1, CE, standardised on train stats, acc and macro-F1 reported once on
+dev with no selection on it. Test features are never loaded here.
 """
 
 import csv
@@ -61,7 +48,7 @@ OUT_ROOT = MINTREC_DATA / "teacher_probe" / "qlora_bottleneck"
 OUT_PLOT = MINTREC_OUTPUTS / "teacher_probe"
 OUT_PLOT.mkdir(parents=True, exist_ok=True)
 
-# Fixed hyperparameters -- IDENTICAL to fsc/teacher_probe/train_probe.py's B2.
+# same hyperparameters as the FSC B2 probe
 EPOCHS = 50
 LR = 1e-3
 WEIGHT_DECAY = 1e-4

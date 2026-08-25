@@ -1,6 +1,6 @@
 """
 The KD comparison that wraps up the MIntRec track: audio-only student against
-audio-visual. README in this folder has the reasoning.
+audio-visual.
 
 No hyperparameter search. Anything not specific to this comparison is the FSC
 final recipe unchanged: T=8, lam_logit 1.0, lam_feature 1.0, AdamW(1e-3, wd
@@ -20,8 +20,10 @@ Ten conditions.
   audio-visual, 115,471 params, ~0.44 MiB fp32:
     av_ce_only
     av_logit_kd
-    av_feature_kd_lasttoken     fusion z against bottleneck(last_token) only,
-                                README says why audiohidden is skipped here
+    av_feature_kd_lasttoken     fusion z against bottleneck(last_token) only.
+                                audiohidden is skipped for this student since
+                                its z is a fused audio+visual vector, so the
+                                clean audio target is the wrong shape for it
     av_full_kd_lasttoken
 """
 

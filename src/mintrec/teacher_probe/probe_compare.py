@@ -1,18 +1,14 @@
 """
-Compare frozen-teacher feature sets on MIntRec2.0 (30-class intent) with a probe
-SWEEP over head capacity / regularization, and plot the result.
+Compares the frozen-teacher feature sets with a sweep over head capacity, and
+plots it.
 
-Auto-discovers every data/mintrec/teacher_features/mintrec2.0*/ folder with
-train+dev features. For each feature key trains several heads on TRAIN, evaluates
-on DEV (test untouched). Strict protocol: standardize with TRAIN stats, fixed
-50-epoch AdamW(1e-3, wd 1e-4), batch 256, CE, no dev selection.
+Finds every data/mintrec/teacher_features/mintrec2.0*/ folder that has train and
+dev features. Each feature key gets several heads trained on train and evaluated
+on dev, test untouched. Standardised on train stats, fixed 50 epochs,
+AdamW(1e-3, wd 1e-4), batch 256, CE, nothing selects on dev.
 
-Heads (capacity-ordered): linear -> 1024 -> 2048-1024, plus high-dropout (0.5)
-versions of the MLPs to test whether depth or regularization is the lever.
-
-Outputs:
-  outputs/mintrec/teacher_probe/results.csv
-  outputs/mintrec/teacher_probe/probe_comparison.png   (dev acc / macroF1 vs head)
+Heads in capacity order: linear, 1024, 2048-1024, plus dropout 0.5 versions of
+the MLPs to see whether depth or regularisation is the lever.
 """
 
 import csv
@@ -37,7 +33,7 @@ EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, SEED = 50, 1e-3, 1e-4, 256, 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 HEADLINE = "pf_audio_mean_L24-27-30-34"
 
-# (id, hidden_dims, dropout, label) - ordered by capacity for the x-axis
+# (id, hidden_dims, dropout, label), in capacity order for the x-axis
 ARCHS = [
     ("A1", [],           0.1, "linear"),
     ("A2", [1024],       0.1, "1024"),

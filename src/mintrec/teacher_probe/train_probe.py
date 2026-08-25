@@ -1,21 +1,14 @@
 """
-Linear-probe validation of the frozen multimodal-teacher audio features on
-MIntRec 2.0 (30-class intent recognition).
+Linear probe on the frozen teacher audio features for MIntRec2.0.
 
-Question: how much intent information sits in the AUDIO-token hidden states of
-the multimodal teacher (which attended over text + video)?  This is the go/no-go
-number for using a frozen teacher as a KD target - same role as the FSC
-teacher-probe stage.
+How much intent information is in the audio-token hidden states of a teacher
+that also attended over text and video? This is the go/no-go number for using
+the frozen teacher as a KD target, same role as the FSC probe stage.
 
-Protocol (mirrors the FSC probe - strict, no leakage):
-  * dev split is the eval set -> NO early stopping / selection on it.
-  * Fixed schedule: 50 epochs, AdamW(lr=1e-3, wd=1e-4), batch 256, CE loss.
-  * Standardize with TRAIN mean/std (applied to both train and dev).
-  * For each extracted feature, train a linear head (A1) and a 1024-MLP head (A2,
-    nonlinear upper bound). Report dev accuracy + macro F1 once, after training.
-
-Inputs : data/teacher_features/<FEAT_TAG>/{train,dev}_features.pt
-Outputs: outputs/mintrec/teacher_probe/results.csv   (+ printed table)
+Same protocol as the FSC probe. Dev is the eval set so nothing selects on it.
+Fixed 50 epochs, AdamW(1e-3, wd 1e-4), batch 256, CE, standardised with train
+mean/std. Each feature gets a linear head and a 1024 MLP head as a nonlinear
+upper bound, reported once after training.
 """
 
 import argparse
@@ -49,7 +42,7 @@ BATCH_SIZE = 256
 SEED = 42
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# (arch_id, hidden dims, description)
+# (arch id, hidden dims, description)
 ARCHS = [
     ("A1", [],     "linear"),
     ("A2", [1024], "1024-MLP upper bound"),
@@ -122,7 +115,7 @@ def main():
             })
 
     results.sort(key=lambda r: r["dev_acc"], reverse=True)
-    csv_path = OUT_DIR / f"results_{args.dtype}.csv"   # keep fp16 / 4bit results side by side
+    csv_path = OUT_DIR / f"results_{args.dtype}.csv"   # keep bf16 and 4bit side by side
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["feature", "arch", "arch_desc",
                                           "dev_acc", "dev_macro_f1", "train_acc"])
