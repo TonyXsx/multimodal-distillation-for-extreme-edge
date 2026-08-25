@@ -1,30 +1,26 @@
 """
-The figures for the report. Four of them, each answering one question the
-numbers alone cannot.
+Figures for the report. Each one answers a question the numbers alone can't.
 
-    fig_loso_five_fold.png                 the headline: 5-fold leave-one-session-out
+    fig_loso_five_fold.png                 the headline, 5-fold LOSO
     fig_results_delta_vs_ce.png            the two single splits, SI and SD
-    fig_mechanism_target_fidelity.png      WHY joint Feature-KD does nothing
-    fig_repr_{si,sd}_emotion_and_speaker.png   what the embedding actually holds
-    fig_teacher_bottleneck_2048_vs_64.png  whether the 64-d target is a good one
+    fig_mechanism_target_fidelity.png      why joint feature-KD does nothing
+    fig_repr_{si,sd}_emotion_and_speaker.png   what the embedding holds
+    fig_teacher_bottleneck_2048_vs_64.png  whether the 64-d target is any good
 
-Everything is the AUDIO target (`audio_mean_l27`) and, where a stage-2 head is
-needed, `mlp_kd`. The last_token target scores the same (test difference 0.38pp,
-p = 0.485) but it has seen the transcript, which an audio-only student cannot
-reach; audio keeps the story consistent from teacher to student, and it is the
-variant val selects in both protocols.
+Everything uses the audio target (audio_mean_l27), and mlp_kd where a stage-2
+head is needed. last_token scores the same (0.38pp on test, p = 0.485) but it
+has seen the transcript, which an audio-only student can't reach. Audio keeps
+the story consistent from teacher to student and it's what val picks in both
+protocols anyway.
 
-Unlike the CSVs, the t-SNE panels show ONE seed -- the best-on-test of the five,
-per encoder. A 2-D embedding of five different runs cannot be averaged, and the
-panels are there to show the shape of the solution, not to measure it. Every
-number quoted in the report comes from the 5-seed tables instead.
+The t-SNE panels show one seed, the best-on-test of the five per encoder,
+unlike the csvs. You can't average a 2-d embedding over five runs, and the
+panels are there to show the shape of the solution rather than measure it.
+Every number quoted in the report comes from the 5-seed tables.
 
-This script reads both protocols in one process, so it builds paths explicitly
-rather than through iemocap.paths, whose PROTOCOL is fixed at import.
+This reads both protocols in one process, so it builds paths explicitly instead
+of going through iemocap.paths, where PROTOCOL is fixed at import.
 
-Outputs: outputs/iemocap/analysis/report/
-
-Usage:
     python src/iemocap/analysis/report_figures.py
     python src/iemocap/analysis/report_figures.py --embed pca      # quick draft
 """
@@ -59,14 +55,13 @@ PROTOCOLS = ("si", "sd")
 SPK_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#c2367f",
                "#a8760a", "#00868b", "#8b2f5f", "#5b7c1f", "#9a4a1f"]
 
-# Figures carry no prose. Panel labels are (a)/(b), the axes are labelled, and
-# everything a reader needs beyond that belongs in the caption -- which is how
-# these get typeset in the report anyway. FIG_CAPTIONS below holds the text to
-# paste under each one.
+# no prose in the figures. panel labels are (a)/(b), axes are labelled, and
+# anything else belongs in the caption, which is how they get typeset anyway.
+# FIG_CAPTIONS below has the text to paste under each one
 PAGE = "#ffffff"
 HIGHLIGHT, MUTED = PALETTE[0], "#8a8983"
 
-# label -> (encoder in the CSVs, stage-2 readout or None for the joint head)
+# label -> (encoder in the csvs, stage-2 readout, or None for the joint head)
 METHODS = [
     ("2-stage, audio + mlp_kd",     "feature_only_audio", "mlp_kd"),
     ("2-stage, last_token + mlp_kd", "feature_only",      "mlp_kd"),
@@ -83,7 +78,7 @@ def suffix(p):
 
 
 def teacher_test(protocol, key=None):
-    """2048-d standardised feature and its 64-d bottleneck, test split."""
+    """standardised 2048-d feature and its 64-d bottleneck, test split."""
     key = key or KEY
     ck = torch.load(DATA / f"teacher_probe{suffix(protocol)}" / "bottleneck" / "adapted"
                     / key / "checkpoint.pt", weights_only=False)
@@ -117,13 +112,12 @@ def series(runs, st2, protocol, enc, readout, col="test_ua"):
 
 
 def fig_loso():
-    """Five-fold LOSO on its own. Two things have to be visible at once: the
-    effect size with its interval, and the fact that it holds in every fold --
-    a mean of +2.4pp means something quite different if the five folds are
-    +2.1..+2.9 than if they are -2..+7. So each fold is plotted as its own dot
-    behind the summary marker, and the right panel shows why fold-level pairing
-    is the correct test: the held-out sessions differ by 5pp in difficulty, and
-    every one of them still improves."""
+    """five-fold LOSO. Two things need to be visible at once: the effect size
+    with its interval, and that it holds in every fold. A mean of +2.4pp means
+    something very different if the folds are +2.1..+2.9 than if they are
+    -2..+7. So each fold gets its own dot behind the summary marker, and the
+    right panel shows why fold-level pairing is the right test - the held-out
+    sessions differ by 5pp in difficulty and every one still improves."""
     import matplotlib.pyplot as plt
     per = pd.read_csv(STUDENT_CSV / "loso_per_fold.csv")
     tab = pd.read_csv(STUDENT_CSV / "loso_main_table.csv")
@@ -139,7 +133,7 @@ def fig_loso():
         d = per[per.method == m].delta_pp.values
         hit = row.folds_positive == 5
         colour = PALETTE[0] if hit else INK_MUTED
-        # the five folds, jittered so coincident values stay countable
+        # jitter the five folds so coincident values are still countable
         ax.scatter(d, np.full(len(d), i) + np.linspace(-0.16, 0.16, len(d)),
                    s=26, color=colour, alpha=0.38, linewidths=0, zorder=2)
         ax.errorbar(row.delta_pp, i,
@@ -161,7 +155,7 @@ def fig_loso():
     _style(ax)
     ax.grid(axis="y", visible=False)
 
-    # right: the paired structure the test exploits
+    # right panel: the paired structure the test uses
     ce = per[per.method == "CE (end-to-end)"].set_index("fold").test_ua
     best = per[per.method == order[-1]].set_index("fold").test_ua
     folds = list(ce.index)
@@ -173,8 +167,8 @@ def fig_loso():
     bx.set_xlim(-0.25, 1.35)
     bx.set_xticks([0, 1])
     bx.set_xticklabels(["CE", "2-stage\naudio + mlp_kd"], fontsize=9.5, color=INK)
-    # ticks and label on the right: panel (a)'s p-value column runs into the
-    # gutter, so a left-hand y-axis here would sit on top of it
+    # ticks on the right, the p-value column in panel (a) runs into the gutter
+    # and a left y-axis here would land on top of it
     bx.yaxis.tick_right()
     bx.yaxis.set_label_position("right")
     bx.set_ylabel("test UA", fontsize=9.5, labelpad=6)
@@ -203,10 +197,10 @@ BAR_METHODS = {
 
 
 def fig_delta_bars(runs, st2, target):
-    """Improvement over CE, as bars. Zero is a real quantity here -- it is the CE
-    baseline trained on the same data -- so bars from zero are honest, and they
-    read faster than a forest plot. logit-KD has no feature target and appears in
-    both versions as the reference KD baseline."""
+    """improvement over CE, as bars. Zero is a real quantity here, it's the CE
+    baseline on the same data, so bars from zero are honest and read faster than
+    a forest plot. logit-KD has no feature target so it shows up in both
+    versions as the reference."""
     import matplotlib.pyplot as plt
     meths = BAR_METHODS[target]
     fig, axes = plt.subplots(1, 2, figsize=(8.6, 3.6), sharey=True, facecolor=PAGE)

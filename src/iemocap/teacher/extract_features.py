@@ -1,31 +1,29 @@
 """
-Extract teacher KD targets for IEMOCAP -- frozen and LoRA-adapted, one script.
+Pulls the teacher KD targets for IEMOCAP. Frozen and LoRA-adapted, same script.
 
-Both arms run through the SAME code path, the same prompt and the same input
-ordering (`iemocap.teacher.data`), and both load the backbone at the same
-precision as the fine-tune. The only difference between them is
-whether the LoRA weights are applied. That is what makes the frozen arm a
-genuine control: on MIntRec the equivalent comparison (frozen audio probe
-0.5443 -> QLoRA 0.5533, against 0.6130 for the readout token) is what showed
-the adaptation's benefit lands in the transcript-conditioned readout rather
-than in the audio representation, and the same question has to be answered
-here before the LoRA step can be justified in the write-up.
+Both arms go through the same code path, the same prompt and the same input
+order, and load the backbone at the same precision as the fine-tune. The only
+difference is whether the LoRA weights get applied, which is what makes the
+frozen arm an actual control. On MIntRec the same comparison (frozen audio
+probe 0.5443 -> QLoRA 0.5533, against 0.6130 for the readout token) is what
+showed the adaptation was mostly helping the transcript-conditioned readout
+rather than the audio representation, and that question needs answering here
+before the LoRA step can be justified.
 
-Per utterance, in ONE forward pass:
+One forward pass per utterance gives:
 
-    last_token           [H]  readout hidden state, final layer -- primary Feature-KD target
+    last_token           [H]  readout state, final layer. main feature-KD target
     audio_mean_final     [H]  clean audio-token mean, final layer
-    audio_mean_l{L}      [H]  clean audio-token mean at layers 24/27/30/34
-    audio_mean_L24-...   [H]  mean over those layers (the FSC-best combination)
-    logits               [C]  classification head output -- Logit-KD target (adapted arm only)
+    audio_mean_l{L}      [H]  same at layers 24/27/30/34
+    audio_mean_L24-...   [H]  mean over those layers, the FSC-best combination
+    logits               [C]  head output, logit-KD target, adapted arm only
 
-`audio_mean*` is clean because audio precedes the transcript in the input, so
-under causal masking those tokens never attend to the text (see
-`iemocap.teacher.data`). `last_token` has seen everything -- that asymmetry is
-the privileged-information story this track is testing.
+audio_mean* is clean because audio comes before the transcript, so under causal
+masking those tokens never attend to the text. last_token has seen everything.
+That asymmetry is the privileged-information question this track is testing.
 
-Sharding, resume and the on-disk shard format are reused from the MIntRec
-extractor, so the existing probe code can read these files unchanged.
+Sharding, resume and the shard format come from the MIntRec extractor, so the
+existing probe code reads these files unchanged.
 
 Usage:
     # frozen control (no adapter)
@@ -57,14 +55,14 @@ from iemocap.teacher.data import (  # noqa: E402
     CLASSES, LABEL2ID, INSTRUCTION, READOUT_CUE, SPLITS,
     load_split, wav_path, load_audio, build_inputs, input_order_str,
 )
-# Sharding / resume / layer choice / special-token lookup reused as-is.
+# sharding, resume, layer choice and the special-token lookup, all reused
 from mintrec.teacher_probe.extract_features_local import (  # noqa: E402
     LLM_LAYERS, MEAN_COMBO, SHARD_SIZE, EMPTY_CACHE_EVERY,
     AUDIO_START_ID_DEFAULT, AUDIO_END_ID_DEFAULT,
     get_special_id, find_audio_indices, _cpu16,
     _flush_shard, _load_shards, _count_done,
 )
-# Same backbone loader the fine-tune uses, so the two cannot diverge.
+# same loader the fine-tune uses, so they cannot diverge
 from iemocap.teacher.backbone import MODELS, load_thinker, get_hidden_size  # noqa: E402
 from mintrec.teacher_probe.qlora_finetune import OmniClassifier  # noqa: E402
 
@@ -172,9 +170,8 @@ def main():
 
     model_name = MODELS[args.model]
     use_transcript, dtype = args.use_transcript, args.dtype
-    # An adapted run must reproduce the fine-tune exactly -- including its
-    # precision, since an adapter trained on a bf16 base is not valid on a
-    # 4-bit one (and vice versa).
+    # an adapted run has to reproduce the fine-tune exactly, precision included.
+    # an adapter trained on bf16 is not valid on a 4-bit base or the other way
     if adapter_dir is not None:
         cfg_path = adapter_dir.parent / "config.json"
         if cfg_path.exists():
@@ -214,7 +211,7 @@ def main():
     targets = list(SPLITS) if args.split == "all" else [args.split]
     for split in targets:
         df = load_split(split)
-        if df.empty:                      # true LOSO has no val
+        if df.empty:                      # LOSO has no val
             print(f"[{split}] absent in this protocol's manifest, skipping")
             continue
         print(f"\n=== {split}: {len(df)} utterances ===")

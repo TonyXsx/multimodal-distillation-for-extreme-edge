@@ -1,28 +1,25 @@
 """
-IEMOCAP data layer for the teacher stage.
+Data layer for the IEMOCAP teacher stage.
 
-Frozen extraction, the QLoRA fine-tune and adapted extraction all read
-utterances through this module, so the prompt wording, the input ordering and
-the label mapping exist in exactly one place and cannot drift between the
-training run and the extraction that has to reproduce it.
+The frozen extraction, the QLoRA fine-tune and the adapted extraction all read
+utterances through here, so the prompt, the input order and the label map live
+in one place and cannot drift between the training run and the extraction that
+has to reproduce it.
 
-INPUT ORDER -- instruction -> audio -> transcript -> "Emotion:" readout.
+Input order is instruction -> audio -> transcript -> "Emotion:" cue.
 
-Audio sits immediately after the instruction so that, under causal masking,
-audio tokens attend only to the task instruction and never to the transcript.
-That keeps `audio_mean` a genuinely audio-only feature (something a student
-could in principle reproduce) while the readout token at the end still sees
-everything, so a single forward pass yields both a clean audio feature and a
-transcript-aware readout.
+Audio comes right after the instruction so that under causal masking the audio
+tokens see the task but never the transcript. That keeps audio_mean a genuinely
+audio-only feature, something a student could actually reproduce, while the
+readout token at the end still sees everything. One forward pass, both a clean
+audio feature and a transcript-aware readout.
 
-This is the arrangement validated on MIntRec2.0. Note that the *frozen*
-MIntRec extractor used the opposite order (audio last, absorbing the preceding
-text); here both the frozen and the adapted arm use this same order, so the
-frozen-vs-adapted control is a like-for-like comparison rather than a
-comparison that also changes the input layout.
+Same arrangement as MIntRec2.0, except the frozen MIntRec extractor put audio
+last. Here both arms use this order, so the frozen vs adapted comparison does
+not also change the layout.
 
-No video: only Session 1 ships any, at dialog level, and Session 1 is the test
-split. The student on this track is audio-only.
+No video. Only Session 1 has any, at dialog level, and Session 1 is the test
+split. The student here is audio-only.
 """
 
 import sys
@@ -35,18 +32,17 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from iemocap.paths import IEMOCAP_EXTRACTED, IEMOCAP_MANIFEST  # noqa: E402
 from iemocap.data.build_manifest import CLASSES, LABEL2ID      # noqa: E402  single source of truth
-# librosa 16 kHz mono loader, reused rather than re-implemented.
+# reuse the librosa 16k mono loader rather than writing another one
 from mintrec.teacher_probe.extract_features_local import load_audio  # noqa: E402,F401
 
 SPLITS = ("train", "val", "test")
 
 
 def manifest_splits():
-    """The splits this protocol's manifest actually contains, in canonical order.
+    """which splits this manifest actually has, in a fixed order.
 
-    The LOSO folds are true leave-one-session-out and carry no validation set at
-    all, so nothing downstream may assume all three exist -- every loop over
-    splits asks here instead of iterating SPLITS blindly.
+    The LOSO folds have no val set at all, so nothing downstream should assume
+    all three exist. Loops ask here rather than walking SPLITS blindly.
     """
     df = pd.read_csv(IEMOCAP_MANIFEST, usecols=["split"])
     present = set(df["split"].unique())
@@ -61,11 +57,11 @@ READOUT_CUE = "Emotion:"
 
 
 def load_split(split, limit=None, manifest=None):
-    """One split of the manifest, ordered deterministically.
+    """one split of the manifest, in a deterministic order.
 
-    Row order fixes the shard order, so it must not depend on filesystem
-    listing: `build_manifest.py` already sorts by (session, dialog, turn_id)
-    and that order is preserved here.
+    Row order decides shard order, so it must not depend on directory listing.
+    build_manifest.py already sorts by (session, dialog, turn_id) and that gets
+    preserved here.
     """
     path = Path(manifest) if manifest else IEMOCAP_MANIFEST
     if not path.exists():
@@ -85,9 +81,8 @@ def wav_path(row):
 def build_inputs(proc, device, wav, transcript, use_transcript=True):
     """instruction -> audio -> [transcript] -> readout cue.
 
-    An empty transcript is simply omitted: 29 utterances in the 4-class subset
-    consist of nothing but a stripped non-verbal marker, and they keep their
-    audio and label.
+    Empty transcripts get left out. 29 utterances in the 4-class subset are
+    nothing but a stripped marker, and they keep their audio and label.
     """
     from qwen_omni_utils import process_mm_info
 

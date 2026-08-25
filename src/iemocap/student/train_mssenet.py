@@ -1,43 +1,37 @@
 """
-Phase 1: MS-SENet student, CE baseline only -- no distillation yet.
+MS-SENet student, CE baseline only. No distillation at this stage.
 
-The point of swapping the backbone is not the architecture; it is to run the
-later CE / logit-KD / feature-KD / combined-KD comparison on a student that is
-not itself the bottleneck. So this stage answers one question first: on OUR
-protocol, what does a faithful MS-SENet reach with cross-entropy alone,
-against the 96K DSResNet-SE's test UA of roughly 0.56-0.58?
+Swapping the backbone isn't about the architecture as such. It's so the later
+CE / logit-KD / feature-KD / full-KD comparison runs on a student that isn't
+itself the bottleneck. So first question: on our protocol, what does a faithful
+MS-SENet get with cross-entropy alone, against the 96K DSResNet-SE test UA of
+roughly 0.56-0.58?
 
-WHAT IS KEPT FROM THE OFFICIAL IMPLEMENTATION
-    architecture      exact port (src/common/models/mssenet.py)
+Kept from the official implementation:
+    architecture      exact port, src/common/models/mssenet.py
     features          39-dim MFCC, 22050 Hz, 310000 samples, hop 512
     optimiser         Adam(lr=1e-3, betas=(0.93, 0.98), eps=1e-8)
     batch size        64
     label smoothing   0.1
-    epochs            200 (official default; --epochs to shorten)
+    epochs            200, their default. --epochs to shorten
 
-WHAT IS DELIBERATELY NOT KEPT -- the evaluation protocol
-    The official code runs `KFold(n_splits=10, shuffle=True)` over UTTERANCES.
-    IEMOCAP has ten speakers, so shuffled utterance folds put the same speaker
-    in train and test; its reported numbers are not speaker-independent. It
-    also passes the test fold in as `validation_data`.
+Not kept: the evaluation protocol. The official code runs
+KFold(n_splits=10, shuffle=True) over utterances. IEMOCAP has ten speakers, so
+shuffled utterance folds put the same speaker in train and test, meaning their
+reported numbers aren't speaker-independent. They also pass the test fold in as
+validation_data.
 
-    This script keeps our protocol unchanged: train = Sessions 2-4, val =
-    Session 5, test = Session 1, all speaker-disjoint; selection on validation
-    UA; test evaluated once on the selected checkpoint. That makes MS-SENet
-    directly comparable to the DSResNet-SE numbers already in
-    outputs/iemocap/student/, and it means results here should NOT be compared
-    with the paper's published IEMOCAP figures, which were produced under the
-    looser scheme.
+This keeps our protocol: train S2-4, val S5, test S1, no speaker shared,
+selection on val UA, test once on the selected checkpoint. That makes MS-SENet
+comparable to the DSResNet-SE numbers already in outputs/iemocap/student/, and
+means these numbers should not be compared with the paper's published IEMOCAP
+figures.
 
-`metrics` and the evaluation loop are imported from train_student.py rather
-than reimplemented, so the two backbones are scored by identical code.
+metrics and the eval loop are imported from train_student.py rather than
+rewritten, so both backbones are scored by the same code.
 
-Outputs:
-    outputs/iemocap/student/mssenet_ce{tag}.csv    one row per seed + summary
-
-Usage:
-    python src/iemocap/student/train_mssenet.py --seeds 42 --epochs 20   # quick look
-    python src/iemocap/student/train_mssenet.py                          # 3 seeds, 200 epochs
+    python src/iemocap/student/train_mssenet.py --seeds 42 --epochs 20   # quick
+    python src/iemocap/student/train_mssenet.py                          # full
 """
 
 import argparse
@@ -61,7 +55,7 @@ from iemocap.student.train_student import metrics  # noqa: E402  identical scori
 MFCC_DIR = IEMOCAP_DATA / "student" / "mfcc39"
 OUT_DIR = IEMOCAP_OUTPUTS / "student"
 
-# Official MS-SENet settings.
+# official MS-SENet settings
 LR, BETAS, EPS = 1e-3, (0.93, 0.98), 1e-8
 BATCH_SIZE = 64
 EPOCHS = 200

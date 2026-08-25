@@ -1,43 +1,36 @@
 """
-Probe the extracted IEMOCAP teacher features: frozen control vs LoRA-adapted.
+Probes the extracted IEMOCAP teacher features, frozen arm against adapted.
 
-Two jobs in one pass.
+Doing two things at once.
 
-1. THE CONTROL. Train an identical probe on every 2048-d feature from both
-   arms and compare. This is what decides whether the LoRA step earned its
-   keep, and WHERE it earned it. On MIntRec the answer was lopsided -- the
-   frozen audio feature probed at 0.5443 and adaptation moved it only to
-   0.5533, while the transcript-conditioned readout reached 0.6130, i.e.
-   almost all the benefit landed in a representation an audio-only student
-   cannot reach. IEMOCAP may differ, because here the audio tower was
-   adapted properly (47.2 M LoRA parameters at rank 64, against MIntRec's
-   7.9 M covering only q/k/v), and because emotion actually lives in prosody.
+First the control: train the same probe on every 2048-d feature from both arms
+and compare. That is what decides whether the LoRA step was worth it and where
+it was worth it. On MIntRec the answer was lopsided - the frozen audio feature
+probed at 0.5443 and adaptation only moved it to 0.5533, while the
+transcript-conditioned readout got 0.6130. So nearly all the benefit landed in
+a representation an audio-only student cannot reach. IEMOCAP might come out
+differently, since the audio tower was adapted properly here (47.2 M LoRA
+params at rank 64 vs MIntRec 7.9 M on q/k/v only) and emotion does live in
+prosody.
 
-2. THE FEATURE-KD TARGETS. The probe shape is 2048 -> 64 -> 4, so the 64-d
-   bottleneck activation is a compact target the student's own 64-d
-   projection can be aligned to directly, with no extra projector. Those
-   activations are saved for train and val.
+Second the feature-KD targets. The probe is 2048 -> 64 -> 4, so the 64-d
+bottleneck lines up with the student projection directly, no extra projector
+needed. Those activations get saved for train and val.
 
-   Test bottlenecks are deliberately NOT saved. The student never receives a
-   teacher signal on test -- same no-leakage rule as FSC and MIntRec. Test
-   features are read here only to report how each representation generalises,
-   which is a statement about the teacher, not a signal handed to the student.
+Test bottlenecks are not saved, on purpose. The student never gets a teacher
+signal on test, same rule as FSC and MIntRec. Test features are read here only
+to report how each representation generalises, which is a statement about the
+teacher rather than something handed to the student.
 
-Protocol, held fixed across every probe so the comparison is clean (identical
-to fsc/teacher_probe/train_probe.py's B2): 50 epochs, AdamW(lr=1e-3,
-wd=1e-4), batch 256, dropout 0.1, CE, standardised with TRAIN statistics, no
-early stopping and no selection on val.
+Protocol is fixed across every probe so the comparison stays clean, same as the
+FSC B2 probe: 50 epochs, AdamW(1e-3, wd 1e-4), batch 256, dropout 0.1, CE,
+standardised on train stats, no early stopping and no selection on val.
 
-`logits` is skipped as a probe input -- it is the teacher's 4-d prediction,
-not a representation. Its argmax accuracy is reported separately as the
-teacher's own readout, which also cross-checks that the extraction matches
-what eval_teacher.py measured on the model itself.
+logits is skipped as a probe input since it is the 4-d prediction, not a
+representation. Its argmax accuracy is reported separately as the teacher
+readout, which doubles as a check that the extraction agrees with what
+eval_teacher.py measured on the model itself.
 
-Outputs:
-    outputs/iemocap/teacher_probe/probe_results.csv
-    data/iemocap/teacher_probe/bottleneck/<arm>/<feature>/{checkpoint.pt,bottleneck_reps.pt}
-
-Usage:
     python src/iemocap/teacher_probe/probe_features.py
     python src/iemocap/teacher_probe/probe_features.py --features last_token audio_mean_l27
 """
@@ -60,10 +53,10 @@ from common.training import DEVICE  # noqa: E402
 from iemocap.paths import IEMOCAP_OUTPUTS, IEMOCAP_PROBE, find_adapted_features  # noqa: E402
 from iemocap.teacher.data import CLASSES  # noqa: E402
 
-ARMS = {"adapted": None}   # resolved at run time; frozen is optional, see --arms
+ARMS = {"adapted": None}   # resolved at run time. frozen is optional, see --arms
 SPLITS = ("train", "val", "test")
 
-# Fixed -- identical to the FSC B2 probe.
+# same as the FSC B2 probe
 EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, DROPOUT, BOTTLENECK, SEED = 50, 1e-3, 1e-4, 256, 0.1, 64, 42
 
 OUT_ROOT = IEMOCAP_PROBE / "bottleneck"
@@ -75,7 +68,7 @@ def load_arm(arm):
     out = {}
     for s in SPLITS:
         f = d / f"{s}_features.pt"
-        if not f.exists():                # true LOSO has no val
+        if not f.exists():                # LOSO has no val
             continue
         r = torch.load(f, weights_only=False)
         out[s] = {"features": r["features"], "labels": r["labels"], "ids": r["sample_ids"]}
@@ -135,7 +128,7 @@ def main():
                                        if v.shape[1] > len(CLASSES))
         ytr = data["train"]["labels"]
 
-        # Teacher's own readout, for reference and as an extraction cross-check.
+        # the teacher readout, for reference and to cross-check the extraction
         if "logits" in data["train"]["features"]:
             for s in (s for s in ("val", "test") if s in data):
                 lg = data[s]["features"]["logits"].float()
@@ -149,7 +142,7 @@ def main():
             model = train_probe((Xtr - mu) / sd, ytr, Xtr.shape[1], len(CLASSES))
 
             saved = {}
-            present = [s for s in SPLITS if s in data]   # true LOSO has no val
+            present = [s for s in SPLITS if s in data]   # LOSO has no val
             for s in present:
                 Xs = (data[s]["features"][key].float() - mu) / sd
                 pred, z = infer(model, Xs)
@@ -170,7 +163,7 @@ def main():
                 torch.save({"state_dict": model.state_dict(), "mu": mu, "sd": sd,
                             "in_dim": Xtr.shape[1], "bottleneck": BOTTLENECK,
                             "classes": CLASSES}, d / "checkpoint.pt")
-                # never test: the student gets no teacher signal on the held-out split.
+                # never test, the student gets no teacher signal on held-out data
                 torch.save({s: {"z": saved[s], "labels": data[s]["labels"],
                                 "ids": data[s]["ids"]}
                             for s in present if s != "test"},
@@ -180,7 +173,7 @@ def main():
     OUT_CSV.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUT_CSV / "probe_results.csv", index=False)
 
-    if (df.split == "val").any():          # true LOSO has no val
+    if (df.split == "val").any():          # LOSO has no val
         print("\n=== val UA by arm x feature ===")
         piv = df[df.split == "val"].pivot(index="feature", columns="arm", values="ua")
         if {"adapted", "frozen"} <= set(piv.columns):

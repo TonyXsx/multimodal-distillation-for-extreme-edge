@@ -1,47 +1,38 @@
 """
-KD hyperparameter sweep on IEMOCAP -- is the null result a tuning failure?
+KD hyperparameter sweep on IEMOCAP. Is the null result just a tuning failure?
 
-Every KD number recorded so far used T=8 and lambda=1.0/1.0, carried over from
-FSC without re-tuning. FSC's own write-up warns against exactly that: a
-negative claim ("X does not help") is only valid at X's best hyperparameters,
-and on FSC moving T from 2 to 8 reversed the conclusion. The two tasks are not
-comparable on this axis -- FSC has 31 classes (uniform mass 0.032) while
-IEMOCAP has 4 (uniform 0.25), so T=8 flattens this teacher to a correct-class
-probability of 0.397 against a 0.25 floor.
+Every KD number so far used T=8 and lambda 1.0/1.0, carried over from FSC
+without re-tuning. The FSC write-up warns against exactly that - a negative
+claim is only valid at the best hyperparameters, and on FSC moving T from 2 to
+8 flipped the conclusion. The two tasks aren't comparable on this axis anyway:
+FSC has 31 classes (uniform mass 0.032), IEMOCAP has 4 (uniform 0.25), so T=8
+flattens this teacher to a correct-class probability of 0.397 against a 0.25
+floor.
 
-Greedy, in the order the losses are usually tuned, following
-`fsc/student/tune_kd_hparams.py`:
+Greedy, same order as fsc/student/tune_kd_hparams.py:
 
     stage 1   logit_kd    T over {1, 2, 4, 8, 16}, lambda_logit = 1
     stage 2   logit_kd    lambda_logit over {0.25, 0.5, 2, 4} at the best T
     stage 3   feature_kd  lambda_feature over {0.25, 0.5, 1, 2, 4}
-    stage 4   full_kd     the two winners combined
+    stage 4   full_kd     the two winners together
 
-HOW TO READ THE OUTPUT -- this matters more than the winner.
+How to read the output, which matters more than the winner. Selection is on val
+UA. Test is recorded at every point but never used to choose anything, it's
+there so "does the val-optimal setting transfer" can be checked afterwards
+instead of assumed.
 
-Selection is on VALIDATION UA. Test is recorded for every point but is never
-used to choose anything; it is there so that "does the val-optimal setting
-transfer" can be answered afterwards rather than assumed.
+With one seed and a noise floor of about +/-0.6 points run to run (+/-2 across
+seeds), the argmax of this grid isn't trustworthy by itself. The useful thing
+is the shape of the surface. A smooth trend in T or lambda means there is a
+real effect and the current setting is just off the peak. Scatter with no
+structure means the differences are noise and no amount of re-tuning will save
+the comparison.
 
-With one seed and a measured noise floor of roughly +/-0.6 points run-to-run
-(and +/-2 points across seeds), the argmax of this grid is not trustworthy on
-its own. What IS informative is the SHAPE of the response surface:
+So the question is not which T wins, it's whether there is any signal at all.
 
-  * a smooth, ordered trend in T or lambda means a real effect is present and
-    the current setting is simply off the peak;
-  * scatter with no structure means the differences are noise, the sweep has
-    found nothing, and no amount of re-tuning will rescue the comparison.
+Runs on the unaugmented train split by default since that's where the null
+results came from. --aug switches to the speed+VTLP cache.
 
-So the question this script answers is not "which T wins" but "is there a
-signal here at all".
-
-Runs on the unaugmented training split by default, since that is the setting
-all the null results came from; `--aug` switches to the speed+VTLP cache.
-
-Outputs:
-    outputs/iemocap/student/sweep_kd_hparams{tag}.csv
-
-Usage:
     python src/iemocap/student/tune_kd_hparams.py
     python src/iemocap/student/tune_kd_hparams.py --aug --tag _aug
 """
@@ -64,13 +55,13 @@ from iemocap.student.kd_common import (  # noqa: E402
 from iemocap.student.train_student import AUG_CACHE, METHODS, run  # noqa: E402
 
 OUT_DIR = IEMOCAP_OUTPUTS / "student"
-FEATURE_METHOD = "feature_kd_lasttoken"     # the probe-preferred privileged target
+FEATURE_METHOD = "feature_kd_lasttoken"     # the target the probe preferred
 FULL_METHOD = "full_kd_lasttoken"
 
 
 def sweep_point(name, lam_logit, lam_feat, feat_key, t_kd, seed, data, epochs, student,
                 lam_rkd=0.0, select="final"):
-    """Install a temporary METHODS entry and run it."""
+    """drop a temporary METHODS entry in and run it."""
     METHODS[name] = (lam_logit, lam_feat, feat_key)
     t0 = time.time()
     r = run(name, seed, data, epochs, t_kd=t_kd, student=student,
@@ -125,7 +116,7 @@ def main():
               f"val UA={r['val_ua']:.4f}  test UA={r['test_ua']:.4f}  "
               f"({r['seconds']:.0f}s)", flush=True)
 
-    # baseline for reference -- unaffected by any KD hyperparameter
+    # baseline for reference, no KD hyperparameter touches it
     record("baseline", sweep_point("ce_only", 0.0, 0.0, None, 1.0, args.seed,
                                    data, args.epochs, args.student, select=args.select))
 
@@ -159,15 +150,13 @@ def main():
     record("4_full", sweep_point(FULL_METHOD, best_ll, best_lf, feat_key, best_t,
                                  args.seed, data, args.epochs, args.student, select=args.select))
 
-    # Relational KD (Park et al. 2019): match the pairwise DISTANCE ratios and
-    # the triplet ANGLES of the teacher's embedding instead of its absolute
-    # positions. Worth a look here for two reasons. First, both terms are
-    # invariant to translation and scale, so the shared constant direction that
-    # eats roughly 42% of the cosine target -- and which the student has to
-    # spend a learnable BatchNorm bias reproducing -- simply drops out. Second,
-    # relational objectives are usually reported to degrade more gracefully
-    # when teacher and student differ enormously in capacity, which is the
-    # regime here (4.7 B against 96 K).
+    # relational KD (Park et al. 2019): match the pairwise distance ratios and
+    # the triplet angles of the teacher embedding instead of absolute positions.
+    # worth a try for two reasons. both terms are invariant to shift and scale,
+    # so the shared direction that eats ~42% of the cosine target drops out
+    # instead of the student spending a batchnorm bias on it. and relational
+    # objectives are supposed to hold up better when teacher and student differ
+    # this much in capacity (4.7 B vs 96 K)
     print(f"\n--- stage 5: relational KD (target {feat_key}) ---")
     for lam in args.lam_rkds:
         record("5_rkd", sweep_point("ce_only", 0.0, 0.0, None, 1.0, args.seed,

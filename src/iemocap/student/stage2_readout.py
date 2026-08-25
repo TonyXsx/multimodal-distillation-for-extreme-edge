@@ -1,59 +1,55 @@
 """
-Stage 2: how much does the READOUT on top of a frozen student embedding matter?
+Stage 2. How much does the readout on top of a frozen student embedding matter?
 
-`feature_only` trains its 96k-parameter encoder with no labels at all -- only the
-teacher's 64-d vector -- so its own classifier head never receives a gradient and
-is meaningless. It is scored instead with a head fitted on the TRAIN embeddings
-and applied unchanged to val and test. Nothing is ever fitted on test.
+feature_only trains its 96k encoder with no labels at all, only the teacher 64-d
+vector, so its own classifier head never gets a gradient and means nothing. It
+gets scored with a head fitted on the train embeddings and applied unchanged to
+val and test. Nothing is ever fitted on test.
 
-That two-stage recipe is NOT the same thing as Feature-KD, and the difference is
-where CE is allowed to act:
+That two-stage recipe is not the same as feature-KD. The difference is where CE
+is allowed to act:
 
-    feature_kd    CE and cosine optimised jointly -> CE gradients flow through
+    feature_kd    CE and cosine optimised together, so CE gradients go through
                   the whole encoder and shape z
-    feature_only  the encoder is shaped by cosine ALONE; CE only ever touches
+    feature_only  the encoder is shaped by cosine alone, CE only ever touches
                   the 260-parameter readout
 
-target_fit.csv showed that distinction is not cosmetic: dropping CE from the
-encoder cost 6pp of fit on train but tripled how much of the teacher's mapping
-survived to test (7.4% -> 25.4%).
+target_fit.csv showed that isn't cosmetic - taking CE out of the encoder cost
+6pp of fit on train but tripled how much of the teacher mapping survived to test
+(7.4% -> 25.4%).
 
-This script asks the remaining question -- whether the reported number depends
-on which readout is used -- by refitting four heads on the CACHED embeddings.
-No model is retrained, so all five seeds come for free:
+So the remaining question is whether the reported number depends on which
+readout is used. This refits several heads on the cached embeddings. Nothing is
+retrained, so all five seeds are free:
 
-    logreg      standardised logistic regression (what fixed_protocol_runs.csv used)
-    linear      torch nn.Linear(64, 4), the same head the network itself carries,
-                trained with the same CE + label smoothing the network would use
-    mlp         64 -> 64 -> 4, to see whether a non-linear readout finds more
-    knn         k=10 cosine k-NN, parameter-free, as a sanity floor
+    logreg      standardised logistic regression, what fixed_protocol_runs used
+    linear      nn.Linear(64, 4), the head the network itself carries, trained
+                with the same CE and label smoothing
+    mlp         64 -> 64 -> 4, does a non-linear readout find more
+    knn         k=10 cosine kNN, parameter free, a sanity floor
     ffn         64 -> 256 -> 64 -> 4, the expand-then-contract shape of a
-                transformer feed-forward block (33,348 params)
-    linear_kd   `linear` plus the teacher's logit-KD term at T=2
-    mlp_kd      `mlp` plus the same
-    ffn_kd      `ffn` plus the same
+                transformer FFN block, 33,348 params
+    linear_kd   linear plus the teacher logit-KD term at T=2
+    mlp_kd      mlp plus the same
+    ffn_kd      ffn plus the same
 
-Every `_kd` head is paired with its plain twin on purpose. mlp_kd beat every
-linear readout, but it changed two things at once -- width AND loss -- and the
-2x2 showed the two factors do nothing alone and only pay off together. Any new
-head shape has to be reported the same way, or the interaction gets attributed
-to whichever factor is mentioned first.
+Each _kd head is paired with its plain twin deliberately. mlp_kd beat every
+linear readout, but it changed two things at once, width and loss, and the 2x2
+showed neither does anything alone. Any new head shape has to be reported the
+same way or the interaction gets credited to whichever factor gets mentioned
+first.
 
-If the first four agree, the choice of readout is not doing the work and
-`feature_only`'s advantage is a property of the representation.
+If the first four agree then the readout isn't doing the work and the
+feature_only advantage is a property of the representation.
 
-The `_kd` pair exists because of a result the fixed protocol turned up: refitting
-a plain head on frozen features HELPS a CE-trained encoder (+0.89pp, p = 0.002)
-but HURTS a logit-KD-trained one (-1.89pp, p = 0.032). Part of what logit-KD buys
-is a better classifier head, not a better representation -- so a two-stage recipe
-that throws that away in stage 2 is leaving it on the table. `linear_kd` puts it
-back: the encoder is still trained with no labels at all, and stage 2 fits the
-260-parameter head against both the labels and the teacher's soft targets.
+The _kd pair exists because of something the fixed protocol turned up: refitting
+a plain head on frozen features helps a CE-trained encoder (+0.89pp, p = 0.002)
+but hurts a logit-KD one (-1.89pp, p = 0.032). So part of what logit-KD buys is
+a better head, not a better representation, and a two-stage recipe that throws
+that away in stage 2 is leaving it on the table. linear_kd puts it back - the
+encoder still sees no labels, and stage 2 fits the head against both the labels
+and the teacher soft targets.
 
-Outputs (outputs/iemocap/student/):
-    stage2_readout.csv       one row per (method, seed, readout), val and test
-
-Usage:
     python src/iemocap/student/stage2_readout.py
     python src/iemocap/student/stage2_readout.py --readouts logreg linear
 """
@@ -83,11 +79,11 @@ from iemocap.student.kd_common import (  # noqa: E402
 
 OUT = IEMOCAP_OUTPUTS / "student"
 ZCACHE = IEMOCAP_STUDENT / "z_cache"
-# resolved from the cached embeddings: the LOSO folds have no validation set
+# resolved from the cached embeddings, the LOSO folds have no val set
 SPLITS = ("train", "val", "test")
-# 300 full-batch steps at lr 1e-3 left the linear head badly under-fitted on the
-# feature_only embeddings (0.45 vs 0.57 for a converged lbfgs), which reads as a
-# property of the representation when it is only an optimisation artefact.
+# 300 full-batch steps at lr 1e-3 left the linear head badly underfitted on the
+# feature_only embeddings (0.45 vs 0.57 for a converged lbfgs). that looks like a
+# property of the representation when it is really just an optimisation artefact
 HEAD_EPOCHS, HEAD_LR = 3000, 1e-2
 
 
@@ -103,17 +99,17 @@ def metrics(y, p, prefix):
 
 
 def torch_head(ztr, ytr, hidden=None, seed=0, t_logits=None, T=2.0, lam_logit=1.0):
-    """A head trained the way the network's own head would have been: CE with the
-    same label smoothing, AdamW with the same lr/wd, full-batch, cosine anneal.
+    """head trained the way the network's own head would have been. CE with the
+    same label smoothing, AdamW at the same lr/wd, full batch, cosine anneal.
 
-    With `t_logits` the teacher's logit-KD term is added on top, at the same T=2
-    inherited by every other method here."""
+    Pass t_logits to add the teacher logit-KD term on top, at the same T=2
+    everything else here uses."""
     torch.manual_seed(seed)
     mu, sd = ztr.mean(0, keepdims=True), ztr.std(0, keepdims=True) + 1e-6
     X = torch.from_numpy((ztr - mu) / sd).float().to(DEVICE)
     y = torch.from_numpy(ytr).long().to(DEVICE)
-    # `hidden` is None, one width, or a tuple of widths -- (256, 64) gives the
-    # expand-then-contract shape of a transformer feed-forward block
+    # hidden is None, one width, or a tuple. (256, 64) gives the
+    # expand-then-contract shape of a transformer FFN block
     dims = [] if hidden is None else ([hidden] if isinstance(hidden, int) else list(hidden))
     layers, d = [], X.shape[1]
     for h in dims:
@@ -183,9 +179,9 @@ def main():
         raise FileNotFoundError(f"no cached embeddings in {ZCACHE} -- run run_fixed_protocol.py")
     print(f"{len(files)} cached runs in {ZCACHE}")
 
-    # teacher logits for the _kd readouts. The cache stores splits in the order
-    # load_inputs returns them, which is the order load_teacher_signals asserts
-    # against, so the rows line up -- checked below rather than assumed.
+    # teacher logits for the _kd readouts. the cache stores splits in the order
+    # load_inputs returns them, which is what load_teacher_signals asserts
+    # against, so the rows line up. checked below anyway
     t_logits = None
     if any(r.endswith("_kd") for r in args.readouts):
         _, ytr_ref, ids_tr = load_inputs("train")
@@ -204,10 +200,10 @@ def main():
             predict = build(ro, ztr, ytr, seed, t_logits)
             r = {"protocol": PROTOCOL, "method": method, "seed": seed, "readout": ro}
             for s in SPLITS:
-                if s not in d:            # true LOSO has no val
+                if s not in d:            # LOSO has no val
                     continue
                 r.update(metrics(d[s]["y"], predict(d[s]["z"]), s))
-            # the network's own head, for reference; meaningless for feature_only
+            # the network own head, for reference. meaningless for feature_only
             r["ownhead_test_ua"] = round(float(np.mean([
                 (d["test"]["pred"][d["test"]["y"] == c] == c).mean()
                 for c in range(N_CLASSES)])), 4)
@@ -216,10 +212,9 @@ def main():
             f"{r['readout']}={r['test_ua']:.4f}" for r in rows[-len(args.readouts):]), flush=True)
 
     df = pd.DataFrame(rows)
-    # One file holds every protocol. The output path is not protocol-suffixed, so a
-    # plain overwrite here would silently wipe the other protocol's whole grid --
-    # merge instead, replacing only the (protocol, encoder, readout, seed) cells
-    # this run actually recomputed.
+    # one file holds every protocol and the path has no protocol suffix, so a
+    # plain overwrite would wipe the other protocol's whole grid. merge instead
+    # and only replace the cells this run recomputed
     csv = OUT / "stage2_readout.csv"
     if csv.exists():
         prev = pd.read_csv(csv)
@@ -237,7 +232,7 @@ def main():
     print("\nsd:")
     print(df.pivot_table(index="method", columns="readout", values="test_ua",
                          aggfunc=lambda x: x.std(ddof=1)).round(4).to_string())
-    if "val_ua" in df.columns and df.val_ua.notna().any():   # true LOSO has no val
+    if "val_ua" in df.columns and df.val_ua.notna().any():   # LOSO has no val
         print("\n=== val UA by readout (mean over seeds) ===")
         print(df.pivot_table(index="method", columns="readout", values="val_ua",
                              aggfunc="mean").round(4).to_string())

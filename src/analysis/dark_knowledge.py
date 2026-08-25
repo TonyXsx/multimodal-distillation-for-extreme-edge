@@ -1,44 +1,37 @@
 """
-How much information is actually in the teacher's soft labels?
+How much is actually in the teacher soft labels?
 
-Logit-KD can only help if the teacher's distribution says something a smoothed
-one-hot label does not. Three things decide that, and they are separable:
+Logit-KD can only help if the teacher distribution says something a smoothed
+one-hot doesn't. Three separable things decide that:
 
-    nontarget_mass       1 - p_max. How much probability sits outside the
-                         teacher's own answer at all.
-    nontarget_structure  KL(q_nontarget || uniform) / ln(C-1), in [0, 1].
-                         Whether that leftover mass points at specific
-                         confusable classes or is spread evenly.
-    dark_knowledge       the product. This is KL(q || matched label smoothing)
-                         normalised by ln(C-1) -- i.e. exactly the part of the
-                         soft target that label smoothing could NOT have
-                         produced. Zero means logit-KD is label smoothing with
-                         extra steps.
+    nontarget_mass       1 - p_max, how much probability sits outside the
+                         teacher's own answer
+    nontarget_structure  KL(q_nontarget || uniform) / ln(C-1), in [0,1].
+                         whether that leftover mass points at particular
+                         confusable classes or is just spread evenly
+    dark_knowledge       the product. same as KL(q || matched label smoothing)
+                         normalised by ln(C-1), i.e. the part of the soft
+                         target label smoothing could not have produced. zero
+                         means logit-KD is label smoothing with extra steps.
 
-The product is what matters, and unlike raw entropy it is comparable across
-datasets with different class counts.
+The product is the number that matters, and unlike raw entropy it compares
+across datasets with different class counts.
 
-Two teacher heads are compared where both exist, because the three tracks
-differ in a way that was never controlled:
+Two teacher heads get compared where both exist, because the three tracks
+differ in a way nobody controlled for:
 
-    FSC      logit-KD distilled the PROBE's logits (2048->64->31 head)
-    MIntRec  logit-KD distilled Qwen's own generative logits (30 classes)
-    IEMOCAP  logit-KD distilled Qwen's own generative logits (4 classes)
+    FSC      logit-KD distilled the probe logits, 2048->64->31 head
+    MIntRec  logit-KD distilled Qwen generative logits, 30 classes
+    IEMOCAP  logit-KD distilled Qwen generative logits, 4 classes
 
-A LoRA-tuned generative head is trained to emit one token and saturates; a
-probe trained for 50 epochs of CE need not saturate the same way. If IEMOCAP's
-dark_knowledge is near zero while FSC's is not, then "too few classes" and
-"wrong teacher head" are both live explanations -- and the IEMOCAP probe rows,
-which hold the class count fixed at 4 and change only the head, separate them.
+A LoRA-tuned generative head is trained to emit one token and saturates. A
+probe trained for 50 epochs of CE need not. So if IEMOCAP dark_knowledge is
+near zero and FSC is not, both "too few classes" and "wrong teacher head" are
+live explanations, and the IEMOCAP probe rows separate them since they hold the
+class count at 4 and change only the head.
 
-Everything is measured on TRAIN, the only split whose teacher signal a student
-ever sees.
+All measured on train, the only split whose teacher signal a student sees.
 
-Outputs (outputs/analysis/):
-    dark_knowledge.csv       one row per (teacher head, temperature)
-    fig_dark_knowledge.png   the product, per teacher, across temperatures
-
-Usage:
     python src/analysis/dark_knowledge.py
     python src/analysis/dark_knowledge.py --temps 1 2 4 8 16
 """
@@ -68,13 +61,13 @@ MINTREC_TAG = "mintrec2.0__qwen2.5-omni-3b-4bit-QLORA__tva_tr__adapter_ep3"
 
 
 def raw_logits(feat_dir, split="train"):
-    """Qwen's own generative logits, restricted to the class tokens."""
+    """Qwen generative logits, cut down to the class tokens."""
     r = torch.load(DATA / feat_dir / f"{split}_features.pt", weights_only=False)
     return r["features"]["logits"].float(), r["labels"].long()
 
 
 def fsc_probe_logits():
-    """Rebuild exactly the signal fsc/student/kd_common.py hands the student."""
+    """rebuild the exact signal fsc/student/kd_common.py gives the student."""
     ck_dir = DATA / "teacher_probe" / FSC_TAG / "checkpoints"
     ck = torch.load(next(ck_dir.glob("B2_*.pt")), weights_only=False)
     probe = Probe(2048, ck["hidden_dims"], ck["n_classes"], dropout=ck["dropout"])
@@ -89,7 +82,7 @@ def fsc_probe_logits():
 
 
 def iemocap_probe_logits(key):
-    """The 2048->64->4 probe whose bottleneck is already the Feature-KD target."""
+    """the 2048->64->4 probe whose bottleneck is the feature-KD target."""
     ck = torch.load(DATA / "iemocap" / "teacher_probe" / "bottleneck" / "adapted" / key
                     / "checkpoint.pt", weights_only=False)
     probe = Probe(ck["in_dim"], [ck["bottleneck"]], len(ck["classes"]), dropout=0.0)
@@ -103,12 +96,12 @@ def iemocap_probe_logits(key):
 
 
 def content(logits, y, T):
-    """Soft-target information content at temperature T."""
+    """soft-target information content at temperature T."""
     C = logits.shape[1]
     q = F.softmax(logits / T, dim=1)
     p_max, arg = q.max(1)
 
-    # renormalised distribution over the C-1 classes the teacher did not pick
+    # renormalised over the C-1 classes the teacher didnt pick
     nt = q.scatter(1, arg[:, None], 0.0)
     nt = nt / nt.sum(1, keepdim=True).clamp_min(1e-12)
     # KL(nt || uniform) = ln(C-1) - H(nt); divided through so it lands in [0, 1]

@@ -1,19 +1,14 @@
 """
-Pack the minimum IEMOCAP subset needed for teacher extraction into one tarball.
+Tars up the smallest IEMOCAP subset the teacher stage needs.
 
-Only the utterances that survive the 4-class filter are included -- 5,531 of
-10,039 -- plus the manifest itself. Everything the teacher stage never touches
-(dropped classes, motion capture, forced alignments, full-dialog wavs,
-Session 1's videos) stays behind, which roughly halves the upload against the
-already-slimmed `extracted/` tree.
+Just the 5,531 utterances that survive the 4-class filter, out of 10,039, plus
+the manifest. Everything the teacher never touches stays behind, which roughly
+halves the upload against the already slimmed extracted/ tree.
 
-The archive unpacks directly into a DATA_ROOT, so on the remote machine:
+Unpacks straight into a DATA_ROOT, so on the remote box:
 
     tar xzf iemocap_teacher_subset.tar.gz -C /root/autodl-tmp/data
-    # -> data/iemocap/manifest.csv
-    #    data/iemocap/extracted/Session*/sentences/wav/<dialog>/<turn>.wav
 
-Usage:
     python src/iemocap/package_for_upload.py
     python src/iemocap/package_for_upload.py --out /tmp/iemocap.tar.gz --dry-run
 """

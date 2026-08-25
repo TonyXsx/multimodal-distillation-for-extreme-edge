@@ -1,54 +1,44 @@
 """
-Speaker-perturbing log-mel cache for the IEMOCAP training split:
-speed perturbation + VTLP.
+Augmented log-mel cache for the IEMOCAP train split: speed perturbation + VTLP.
 
-Both augmentations are chosen for one reason: this project's failure mode is
-generalisation across speakers. Each split holds exactly two, so anything that
-manufactures speaker variety attacks the actual problem, while noise and
-reverberation -- which target channel robustness -- would not.
+Both augmentations were picked for the same reason. The failure mode on this
+project is generalising across speakers, and each split has exactly two of
+them, so anything that manufactures speaker variety attacks the real problem.
+Noise and reverb target channel robustness instead, which is not the issue.
 
-SPEED PERTURBATION. Resample to produce x(alpha*t) with alpha in {0.9, 1.0,
-1.1}; tempo AND pitch shift together (Ko et al., 2015). The pitch shift is the
-useful part here. Phase-vocoder time-stretching preserves pitch and would not
-perturb the speaker at all.
+Speed perturbation: resample to get x(alpha*t) with alpha in {0.9, 1.0, 1.1},
+so tempo and pitch move together (Ko et al. 2015). The pitch part is what
+matters here - phase-vocoder time stretching keeps pitch and wouldn't perturb
+the speaker at all.
 
-VTLP (Vocal Tract Length Perturbation, Jaitly & Hinton 2013). A piecewise-
-linear warp of the frequency axis, applied to the power spectrogram before the
-mel filterbank:
+VTLP (Jaitly & Hinton 2013): a piecewise linear warp of the frequency axis,
+applied to the power spectrogram before the mel filterbank.
 
     f' = f * a                                          for f <= f_hi*min(a,1)/a
     f' = F - (F - f_hi*min(a,1)) / (F - f_hi*min(a,1)/a) * (F - f)   otherwise
 
-with F = sr/2 and f_hi = 4800 Hz. It emulates a different vocal tract length,
-i.e. a different speaker. The SER literature recommends it specifically for
-IEMOCAP because it "increases the number of speakers", which is exactly the
-axis along which 6 training speakers is too few.
+with F = sr/2 and f_hi = 4800 Hz. It fakes a different vocal tract length, i.e.
+a different speaker. The SER literature recommends it for IEMOCAP specifically
+because it increases the effective number of speakers, which is exactly what
+6 training speakers is short of.
 
-Only the TRAIN split is expanded. Validation and test stay byte-identical to
-what `precompute_logmel.py` produced, so every previously recorded number
-remains comparable. Copy 0 of each utterance is the untouched original; the
-other copies carry a speed factor and an independently drawn VTLP factor, so
-they differ from the source in both tempo/pitch and apparent vocal tract.
+Only train gets expanded. Val and test stay identical to what
+precompute_logmel.py wrote, so old numbers still compare. Copy 0 of each
+utterance is the untouched original, the rest get a speed factor and an
+independently drawn VTLP factor.
 
-TEACHER SIGNALS. Every copy stores `orig_idx`, a pointer to the utterance it
-came from, and inherits that utterance's teacher logits and bottleneck
-targets. The teacher heard the original audio; its judgement of the utterance
-does not change when the copy is played faster or with a shifted formant
-structure.
+Every copy stores orig_idx pointing back at the utterance it came from, and
+inherits that utterance's teacher logits and bottleneck targets. The teacher
+heard the original audio, and its judgement doesn't change because the copy is
+played faster or with shifted formants.
 
-That asymmetry is the point. Cross-entropy gains N times more (input, label)
-pairs; distillation gains N times more (input, TEACHER-OUTPUT) pairs -- the
-student is asked to reproduce the same teacher response under input variation
-the teacher never saw. If augmentation is going to help the KD conditions more
-than the CE baseline, this is the mechanism by which it would.
+That asymmetry is the whole point. CE gets N times more (input, label) pairs;
+distillation gets N times more (input, teacher output) pairs, so the student
+has to reproduce the same teacher response under variation the teacher never
+saw. If augmentation is going to help KD more than it helps CE, this is how.
 
-Mel configuration is imported from `precompute_logmel.py`, not restated:
-16 kHz, n_fft=400, hop=160, n_mels=64, fmax=8000, 8.0 s.
+Mel config is imported from precompute_logmel.py rather than restated.
 
-Outputs:
-    data/iemocap/student/logmel/train_aug.pt   X [N, 801, 64] float16, labels,
-                                               ids, orig_idx, speed, vtlp
-Usage:
     python src/iemocap/student/precompute_logmel_aug.py
     python src/iemocap/student/precompute_logmel_aug.py --copies 5 --limit 20
 """
@@ -72,31 +62,31 @@ from iemocap.student.precompute_logmel import (  # noqa: E402  shared config, no
 )
 from iemocap.teacher.data import load_split, wav_path  # noqa: E402
 
-F_HI = 4800.0          # VTLP boundary frequency (Jaitly & Hinton)
+F_HI = 4800.0          # VTLP boundary freq, from the paper
 VTLP_RANGE = (0.9, 1.1)
-SPEEDS = (1.0, 0.9, 1.1)   # copy 0 is the untouched original
+SPEEDS = (1.0, 0.9, 1.1)   # copy 0 is the original
 
 
 def speed_perturb(y, sr, alpha):
-    """x(alpha*t): resample to sr/alpha, then treat the result as sr."""
+    """x(alpha*t). resample to sr/alpha then pretend the result is sr."""
     if alpha == 1.0:
         return y
     return librosa.resample(y, orig_sr=sr, target_sr=int(round(sr / alpha)))
 
 
 def vtlp_interp(alpha, n_freq, sr=SR, f_hi=F_HI):
-    """Index/weight arrays that warp a power spectrogram's frequency axis.
+    """index/weight arrays for warping the frequency axis.
 
-    Returns (lo, hi, frac) so the warped spectrum is
-    `S[lo] * (1 - frac) + S[hi] * frac`. Built once per alpha and reused for
-    every frame, since the warp does not depend on time.
+    Returns (lo, hi, frac), so the warped spectrum is
+    S[lo] * (1 - frac) + S[hi] * frac. Built once per alpha and reused for
+    every frame, the warp doesn't depend on time.
     """
     F = sr / 2.0
     freqs = np.linspace(0.0, F, n_freq)
     boundary = f_hi * min(alpha, 1.0) / alpha
     scale = (F - f_hi * min(alpha, 1.0)) / (F - boundary)
     warped = np.where(freqs <= boundary, freqs * alpha, F - scale * (F - freqs))
-    # invert: for each output bin, which input frequency lands on it
+    # invert it: for each output bin, which input freq lands there
     src = np.interp(freqs, warped, freqs)
     pos = np.clip(src / F * (n_freq - 1), 0, n_freq - 1)
     lo = np.floor(pos).astype(np.int64)
@@ -105,8 +95,8 @@ def vtlp_interp(alpha, n_freq, sr=SR, f_hi=F_HI):
 
 
 def logmel_vtlp(y, vtlp_alpha, mel_fb, cache):
-    """Power spectrogram -> optional VTLP warp -> mel -> dB. Matches
-    `precompute_logmel.logmel` exactly when vtlp_alpha == 1.0."""
+    """power spectrogram -> optional VTLP warp -> mel -> dB. identical to
+    precompute_logmel.logmel when vtlp_alpha is 1.0."""
     S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP)) ** 2
     if vtlp_alpha != 1.0:
         key = round(vtlp_alpha, 4)

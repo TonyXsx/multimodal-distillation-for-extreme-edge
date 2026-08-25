@@ -1,34 +1,28 @@
 """
-MIntRec2.0 tiny-student KD comparison: audio-only vs audio-visual, wrapping up
-the MIntRec track (see src/mintrec/student/README.md for the full rationale).
+The KD comparison that wraps up the MIntRec track: audio-only student against
+audio-visual. README in this folder has the reasoning.
 
-No hyperparameter search here -- everything not specific to this comparison
-is reused UNCHANGED from the FSC final recipe: T=8, lam_logit=1.0,
-lam_feature=1.0, AdamW(lr=1e-3, wd=1e-4), cosine schedule, label smoothing
-0.1, SpecAugment on the audio branch, 70 epochs, seed 42, best-by-dev-macroF1
-checkpoint selection, ONE final pass on the held-out TEST split per method.
+No hyperparameter search. Anything not specific to this comparison is the FSC
+final recipe unchanged: T=8, lam_logit 1.0, lam_feature 1.0, AdamW(1e-3, wd
+1e-4), cosine schedule, label smoothing 0.1, SpecAugment on the audio branch,
+70 epochs, seed 42, best-by-dev-macroF1 checkpoint, one test pass per method.
 
-10 conditions total:
+Ten conditions.
 
-  Audio-only student (97,926 params, ~0.37 MiB FP32):
+  audio-only, 97,926 params, ~0.37 MiB fp32:
     ao_ce_only
-    ao_logit_kd                 (vs teacher `logits`, the real QLoRA head)
-    ao_feature_kd_audiohidden   (vs bottleneck(audio_mean_l27) -- CLEAN audio feature)
-    ao_feature_kd_lasttoken     (vs bottleneck(last_token)     -- privileged, all-modality)
-    ao_full_kd_audiohidden      (logit + feature_audiohidden)
-    ao_full_kd_lasttoken        (logit + feature_lasttoken)
+    ao_logit_kd                 against the QLoRA head logits
+    ao_feature_kd_audiohidden   against bottleneck(audio_mean_l27), clean audio
+    ao_feature_kd_lasttoken     against bottleneck(last_token), privileged
+    ao_full_kd_audiohidden
+    ao_full_kd_lasttoken
 
-  Audio-visual student (115,471 params, ~0.44 MiB FP32):
+  audio-visual, 115,471 params, ~0.44 MiB fp32:
     av_ce_only
     av_logit_kd
-    av_feature_kd_lasttoken     (fusion z vs bottleneck(last_token) only -- see README
-                                 for why audiohidden is skipped for this student)
+    av_feature_kd_lasttoken     fusion z against bottleneck(last_token) only,
+                                README says why audiohidden is skipped here
     av_full_kd_lasttoken
-
-Outputs:
-  data/mintrec/student/final_test_checkpoints/<method>.pt
-  outputs/mintrec/student/final_test/results.csv
-  outputs/mintrec/student/final_test/final_test.png
 """
 
 import csv
@@ -59,7 +53,7 @@ OUT = MINTREC_OUTPUTS / "student" / "final_test"
 for d in (CKPT_DIR, OUT):
     d.mkdir(parents=True, exist_ok=True)
 
-# (name, model_ctor, is_audio_visual, lam_logit, lam_feature, feature_key)
+# (name, model ctor, is_audio_visual, lam_logit, lam_feature, feature_key)
 CONDITIONS = [
     ("ao_ce_only",                AudioOnlyStudent,    False, 0.0,       0.0,         None),
     ("ao_logit_kd",               AudioOnlyStudent,    False, LAM_LOGIT, 0.0,         None),
@@ -129,7 +123,7 @@ def run(name, ctor, is_av, lam_logit, lam_feature, feat_key, train_data, dev_dat
 
 @torch.no_grad()
 def evaluate_av(model, X, F, y, is_av, batch_size=256):
-    """Like common.training.evaluate but forwards the optional visual frames too."""
+    """common.training.evaluate but it passes the visual frames through too."""
     model.eval()
     preds = []
     for i in range(0, X.shape[0], batch_size):

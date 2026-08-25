@@ -1,34 +1,28 @@
 """
-What the 2048-d teacher features, their 64-d bottlenecks, and the student's own
-embedding actually look like -- and what is lost at each step.
+What the teacher features, their bottlenecks and the student embedding actually
+look like, and what gets lost at each step.
 
-The distillation chain has three stages, and each one can destroy structure:
+The chain has three stages and any of them can destroy structure:
 
-    Qwen hidden state [2048]  ->  probe bottleneck [64]  ->  student z [64]
+    Qwen hidden state [2048] -> probe bottleneck [64] -> student z [64]
 
-Accuracy alone cannot say where the loss happens. Six representations are
-embedded and scored side by side so it can be read off directly:
+Accuracy on its own can't say where the loss happens, so six representations
+get embedded and scored side by side:
 
-    teacher audio_mean_l27  at 2048 and at 64   (the clean, reachable feature)
-    teacher last_token      at 2048 and at 64   (the privileged readout)
-    student CE              at 64               (no teacher signal at all)
-    student Feature-KD      at 64               (aligned to the audio bottleneck)
+    teacher audio_mean_l27  at 2048 and 64   the clean, reachable feature
+    teacher last_token      at 2048 and 64   the privileged readout
+    student CE              at 64            no teacher signal at all
+    student feature-KD      at 64            aligned to the audio bottleneck
 
-Everything is shown on TEST -- unseen speakers, the only split where the
-numbers mean anything. Train is scored too but only in the metrics table, to
-expose how much of the teacher's apparent structure is the probe memorising
-its 3,205 training samples.
+Everything is shown on test, unseen speakers, the only split where the numbers
+mean anything. Train is scored too but only in the metrics table, to show how
+much of the teacher's apparent structure is just the probe memorising its 3,205
+training samples.
 
-The 2048-d features are standardised with TRAIN statistics before embedding,
-which is exactly what the probe consumes, so the 2048 and 64 panels differ by
-the bottleneck alone rather than by preprocessing.
+The 2048-d features are standardised with train stats before embedding, which
+is what the probe gets, so the 2048 and 64 panels differ by the bottleneck and
+not by preprocessing.
 
-Outputs (outputs/iemocap/analysis/):
-    fig_cluster_chain.png        six t-SNE panels, one per representation
-    cluster_metrics.csv          separability, silhouette, k-NN transfer
-    cluster_centroids.csv        class-centroid cosine per representation
-
-Usage:
     python src/iemocap/analysis/cluster_features.py
     python src/iemocap/analysis/cluster_features.py --embed pca --epochs 20
 """
@@ -64,7 +58,7 @@ KEYS = {"audio_mean_l27": "audio_mean_l27", "last_token": "last_token"}
 
 
 def teacher_reps(key):
-    """Standardised 2048-d feature and its 64-d bottleneck, for every split."""
+    """standardised 2048-d feature and its 64-d bottleneck, per split."""
     ck = torch.load(IEMOCAP_PROBE / "bottleneck" / "adapted" / key / "checkpoint.pt",
                     weights_only=False)
     probe = Probe(ck["in_dim"], [ck["bottleneck"]], len(ck["classes"]), dropout=0.0)
@@ -83,7 +77,7 @@ def teacher_reps(key):
 
 
 def train_student(kind, data, epochs, seed=42):
-    """CE-only or Feature-KD (audio bottleneck target); returns z per split."""
+    """CE-only or feature-KD against the audio bottleneck. returns z per split."""
     Xtr, ytr, mu, sd, t_z, evalsets = data
     torch.manual_seed(seed)
     np.random.seed(seed)

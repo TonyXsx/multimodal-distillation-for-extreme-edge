@@ -1,27 +1,24 @@
 """
-LoRA fine-tune Qwen2.5-Omni (Thinker) for IEMOCAP 4-class emotion recognition.
+LoRA fine-tune of the Qwen2.5-Omni Thinker for 4-class IEMOCAP emotion.
 
-bf16 base by default -- see `backbone.py` for why this replaces MIntRec's
-4-bit setup and why the LoRA coverage differs (audio tower fully adapted and
-at a higher rank, visual tower excluded).
+bf16 base by default. backbone.py has the reasoning for that and for why the
+LoRA coverage differs from MIntRec.
 
-Reused unchanged from the MIntRec track: `OmniClassifier` (the pooled-readout
-classification wrapper). Everything else here is IEMOCAP-specific.
+OmniClassifier is reused from the MIntRec track unchanged, everything else here
+is IEMOCAP specific.
 
-Selection is by validation UNWEIGHTED accuracy (macro recall), not plain
-accuracy: the splits have visibly different class priors (validation is 35.6%
-happy against 13.7% angry), so plain accuracy partly rewards following the
-prior.
+Selection is on validation UA (macro recall) rather than plain accuracy,
+because the splits have quite different class priors - val is 35.6% happy
+against 13.7% angry - so plain accuracy partly just rewards following the prior.
 
 Memory at bf16 on a 24 GB card: ~9.4 GB frozen weights, ~1.5 GB adapter grads
-and optimiser state, 1-2 GB activations at batch 1 with gradient
-checkpointing. Roughly 13 GB, leaving headroom.
+and optimiser state, 1-2 GB activations at batch 1 with checkpointing. About
+13 GB total, so there is headroom.
 
-Usage:
     python src/iemocap/teacher/lora_finetune.py --limit 40 --eval-limit 40 --epochs 1
     python src/iemocap/teacher/lora_finetune.py
-    python src/iemocap/teacher/lora_finetune.py --no-transcript      # audio-only teacher
-    python src/iemocap/teacher/lora_finetune.py --dtype 4bit         # small-GPU fallback
+    python src/iemocap/teacher/lora_finetune.py --no-transcript      # audio-only
+    python src/iemocap/teacher/lora_finetune.py --dtype 4bit         # small gpu
 """
 
 import argparse
@@ -78,8 +75,8 @@ def evaluate(clf, proc, device, df, use_transcript, desc="eval"):
     ys, ps = np.array(ys), np.array(ps)
     return {
         "n": int(len(ys)),
-        "wa": float((ps == ys).mean()),                       # weighted acc == plain accuracy
-        "ua": float(recall_score(ys, ps, average="macro")),   # unweighted acc == macro recall
+        "wa": float((ps == ys).mean()),                       # weighted acc = plain acc
+        "ua": float(recall_score(ys, ps, average="macro")),   # unweighted = macro recall
         "macro_f1": float(f1_score(ys, ps, average="macro")),
         "per_class_recall": recall_score(ys, ps, average=None,
                                          labels=list(range(len(CLASSES)))).round(4).tolist(),
@@ -130,8 +127,8 @@ def main():
     else:
         thinker = model.thinker
         thinker.gradient_checkpointing_enable()
-        # Without this the checkpointed blocks see inputs that do not require
-        # grad, so nothing flows back into the adapters.
+        # without this the checkpointed blocks get inputs that dont require grad
+        # and nothing flows back into the adapters
         if hasattr(thinker, "enable_input_require_grads"):
             thinker.enable_input_require_grads()
 
@@ -199,8 +196,8 @@ def main():
                 pbar.set_postfix(loss=f"{running/max(seen,1):.3f}",
                                  gb=f"{torch.cuda.max_memory_allocated()/1e9:.1f}")
 
-        # True LOSO has no validation set. Train the fixed number of epochs and
-        # keep them all; the caller decides which adapter to extract with.
+        # LOSO has no val set, so just train the fixed number of epochs and keep
+        # them all. the caller picks which adapter to extract with
         m = (evaluate(clf, proc, device, val_df, args.use_transcript)
              if len(val_df) else None)
         if m is None:

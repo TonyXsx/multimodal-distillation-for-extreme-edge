@@ -1,36 +1,28 @@
 """
-Why does joint Feature-KD do nothing while the same cosine loss, used alone in
-stage 1, works?
+Why does joint feature-KD do nothing when the same cosine loss works fine alone
+in stage 1?
 
-Both optimise `1 - cos(z_student, z_teacher)` against the same target. The only
-difference is whether CE is allowed to act on the encoder at the same time. The
-accuracy column says one works and one does not; it cannot say why. Three things
-can, and all three are computable from the cached embeddings without retraining
-anything:
+Both optimise 1 - cos(z_student, z_teacher) against the same target. The only
+difference is whether CE gets to act on the encoder at the same time. The
+accuracy column says one works and one doesn't but can't say why. Three things
+can, all computable from the cached embeddings without retraining:
 
-    target fidelity   cos(student z, teacher z) on train and on test. Splits
+    target fidelity   cos(student z, teacher z) on train and test. separates
                       "never learned the mapping" from "learned it on train and
-                      it did not carry". Read against the collapse baseline --
-                      a student that emits one constant vector for everything
-                      still scores well, because the target has a large shared
-                      direction.
-    emotion content   k-NN transfer train -> test. What the embedding is for.
-    speaker content   leave-one-out k-NN predicting WHICH OF THE 10 SPEAKERS
-                      produced the utterance, inside the test split, classes
-                      balanced by subsampling. What the embedding leaked.
+                      it didn't carry". read it against the collapse baseline,
+                      since a student emitting one constant vector still scores
+                      well thanks to the large shared direction in the target.
+    emotion content   kNN transfer train -> test. what the embedding is for.
+    speaker content   leave-one-out kNN predicting which of the 10 speakers made
+                      the utterance, inside test, classes balanced by
+                      subsampling. what the embedding leaked.
 
-The speaker measurement is the reason this runs on SD and not SI. Under SI the
-three splits are three disjoint sets of speakers, so "which split" and "which
-speaker" are the same question and a high score cannot distinguish a speaker
-code from a session or channel code. Under SD all ten speakers appear in every
-split, so the two are independent and speaker identity can be measured directly.
+The speaker measurement is why this runs on SD rather than SI. Under SI the
+three splits are three disjoint speaker sets, so "which split" and "which
+speaker" are the same question and a high score can't tell a speaker code from
+a session or channel code. Under SD all ten speakers are in every split, so the
+two are independent.
 
-Outputs (outputs/iemocap/analysis/):
-    what_student_encodes.csv        per encoder x seed: fidelity, emotion, speaker
-    fig_emotion_vs_speaker.png      the two contents side by side, per encoder
-    fig_speaker_tsne.png            test embeddings coloured by speaker
-
-Usage:
     IEMOCAP_PROTOCOL=sd python src/iemocap/analysis/what_the_student_encodes.py
 """
 
@@ -65,7 +57,7 @@ ORDER = ["ce", "logit_kd", "feature_kd", "feature_kd_audio",
 
 
 def teacher_z(key):
-    """The 64-d probe bottleneck for this protocol, every split."""
+    """the 64-d probe bottleneck for this protocol, every split."""
     ck = torch.load(IEMOCAP_PROBE / "bottleneck" / "adapted" / key / "checkpoint.pt",
                     weights_only=False)
     probe = Probe(ck["in_dim"], [ck["bottleneck"]], len(ck["classes"]), dropout=0.0)
@@ -83,7 +75,7 @@ def teacher_z(key):
 
 
 def collapse_floor(t):
-    """Score a student that emits one constant vector for every utterance."""
+    """what a student that emits one constant vector would score."""
     tn = normalize(t)
     c = tn.mean(0)
     return float((tn @ (c / np.linalg.norm(c))).mean())
@@ -95,7 +87,7 @@ def fidelity(zs, zt):
 
 
 def balanced_speaker_knn(Z, spk, k, repeats, rng0=0):
-    """k-NN accuracy at naming the speaker, classes equalised by subsampling."""
+    """kNN accuracy at naming the speaker, classes equalised by subsampling."""
     ids, counts = np.unique(spk, return_counts=True)
     n_min = counts.min()
     accs = []
@@ -148,7 +140,7 @@ def main():
                 fid = fidelity(zs, tz[key][s][0])
                 fl = floors[key][s]
                 r[f"fid_{tag}_{s}"] = round(fid, 4)
-                # share of the distance from "constant vector" to "exact match"
+                # how far along from constant-vector to exact-match it got
                 r[f"fit_{tag}_{s}_pct"] = round((fid - fl) / (1 - fl) * 100, 1)
         r["emotion_knn_ua"] = round(knn_transfer(ztr, d["train"]["y"], ztest,
                                                  d["test"]["y"], k=args.k)["ua"], 4)

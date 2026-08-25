@@ -1,35 +1,30 @@
 """
-Does the student fail to LEARN the teacher's mapping, or fail to GENERALISE it?
+Does the student fail to learn the teacher mapping, or fail to generalise it?
 
 Feature-KD asks the student to reproduce, from log-mels, the 64-d vector the
-teacher produced for the same utterance. If it succeeded exactly, its test
-accuracy would be the probe's test accuracy -- 0.786 UA, not the 0.58 it gets.
-So something is lost, and there are only two places to lose it:
+teacher made for the same utterance. If it did that exactly its test accuracy
+would be the probe's, 0.786 UA, not the 0.58 it actually gets. So something is
+lost, and there are only two places to lose it:
 
-    it never fit the target at all              -> capacity
-    it fit train and the mapping did not carry  -> generalisation
+    never fit the target at all             -> capacity
+    fit train but the mapping didn't carry  -> generalisation
 
-Those look identical in the accuracy column and completely different here,
-because the teacher's 64-d vectors exist for test too (they are simply never
-used as a training signal). Measuring cos(student z, teacher z) separately on
-train and on test separates the two cases in one number.
+Those look the same in the accuracy column and completely different here,
+because the teacher 64-d vectors exist for test too, they're just never used as
+a training signal. Measuring cos(student z, teacher z) separately on train and
+test tells the two apart in one number.
 
-Three objectives are compared, all with the same architecture and schedule:
+Three objectives, same architecture and schedule:
 
-    ce          no teacher signal at all
-    ce+cos      CE + cosine feature loss -- what every Feature-KD run used
-    cos_only    CE weight set to zero, pure feature imitation
+    ce          no teacher signal
+    ce+cos      CE + cosine feature loss, what every feature-KD run used
+    cos_only    CE weight zero, pure feature imitation
 
-cos_only needs care: with no CE the classifier head receives no gradient and
-stays at its initialisation, so its own logits are meaningless. Every method is
-therefore ALSO scored with a logistic-regression head fitted on the train
-embeddings, which is the only comparison that treats the three fairly.
+cos_only needs care: with no CE the classifier head gets no gradient and stays
+at init, so its own logits mean nothing. So every method also gets scored with
+a logistic regression head fitted on the train embeddings, which is the only
+comparison that's fair to all three.
 
-Outputs (outputs/iemocap/analysis/):
-    target_fit.csv        per (method, seed): target fit on train and test,
-                          separability, and both readouts
-
-Usage:
     python src/iemocap/analysis/target_fit.py
     python src/iemocap/analysis/target_fit.py --seeds 42 43 44 --epochs 70
 """
@@ -120,15 +115,14 @@ def main():
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
-    # teacher bottlenecks for EVERY split. Test targets are used for measurement
-    # only -- no student is ever trained against them.
+    # teacher bottlenecks for every split. the test ones are for measurement
+    # only, no student is trained against them
     _, teacher_z = teacher_reps(FEAT_KEY)
 
-    # The number that makes target_cos readable. A student that gives up and emits
-    # ONE constant vector for every utterance still scores well on a cosine loss,
-    # because 19% of the target's energy is a direction all samples share. The best
-    # such constant is the mean of the normalised targets, and its score is the
-    # floor any real fit has to beat.
+    # this is what makes target_cos readable. a student that gives up and emits
+    # one constant vector for everything still scores well on a cosine loss,
+    # because 19% of the target energy is a shared direction. the best such
+    # constant is the mean of the normalised targets, so that is the floor
     collapse = {}
     for s in ("train", "test"):
         t = teacher_z[s][0]
@@ -151,7 +145,7 @@ def main():
             out = train(lam_ce, lam_feat, data, args.epochs, seed)
 
             ztr, ytr_np, _ = out["train"]
-            clf = LogisticRegression(max_iter=2000)  # multinomial is the default
+            clf = LogisticRegression(max_iter=2000)  # multinomial by default
             clf.fit(ztr, ytr_np)
 
             r = {"method": name, "seed": seed, "lam_ce": lam_ce, "lam_feature": lam_feat}

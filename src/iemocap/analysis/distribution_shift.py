@@ -1,42 +1,40 @@
 """
-Do train, val and test occupy the same region of the teacher's feature space?
+Do train, val and test sit in the same region of the teacher feature space?
 
 The student is asked to reproduce, on training utterances, a geometry the
-teacher produced on those same utterances. That transfer can only pay off on
-test if the teacher's own representation puts the three splits in the same
-place. Under the speaker-independent protocol there is reason to doubt it:
-train, val and test share no speakers at all, and their class priors differ
-(KL(val || test) = 0.037, four times KL(train || test)).
+teacher produced on those same utterances. That only pays off on test if the
+teacher representation puts the three splits in the same place. Under the
+speaker-independent protocol there is reason to doubt it - the splits share no
+speakers at all and their class priors differ (KL(val, test) = 0.037, four
+times KL(train, test)).
 
-Six representations are pooled across all three splits, embedded together in
-one space so they are directly comparable, and coloured by SPLIT rather than
-by class -- the question here is not "are the classes separable" but "is this
-the same distribution".
+Six representations get pooled across all three splits, embedded together so
+they compare directly, and coloured by split rather than by class. The question
+isn't whether the classes separate, it's whether this is one distribution.
 
-The headline number is SPLIT PREDICTABILITY: leave-one-out k-NN accuracy at
+The headline number is split predictability: leave-one-out kNN accuracy at
 guessing which split a sample came from, against the majority rate. Chance
-means the three splits are interchangeable; well above chance means the
-teacher's feature space encodes which session a recording came from, and any
-geometry the student copies from train carries that with it.
+means the splits are interchangeable. Well above chance means the feature space
+encodes which session a recording came from, and whatever the student copies
+from train carries that along.
 
-Per-class centroid cosine between splits answers the sharper version: even if
-the clouds overlap, does "angry" sit in the same direction in train as it does
-in test? That is what a Feature-KD target actually has to get right.
+Per-class centroid cosine between splits is the sharper version: even if the
+clouds overlap, does angry point the same way in train as in test? That's what
+a feature-KD target actually has to get right.
 
-One reading trap, and the reason `centroid_norm_*` is recorded. The 2048-d
-features are standardised with TRAIN statistics, so the GLOBAL train centroid
-is pinned at the origin by construction -- its mean unit vector has norm 0.01
-to 0.03, against 0.42 to 0.49 at 64-d. A direction that short is noise, so the
-global cos_train_* columns are meaningless whenever centroid_norm_train is
-near zero, and only the 64-d rows and the per-class cosines (whose centroids
-are not pinned) carry signal there.
+One trap, and the reason centroid_norm_* is recorded. The 2048-d features are
+standardised on train stats, so the global train centroid is pinned at the
+origin by construction - its mean unit vector has norm 0.01 to 0.03 against
+0.42 to 0.49 at 64-d. A direction that short is noise, so the global cos_train_*
+columns mean nothing when centroid_norm_train is near zero, and only the 64-d
+rows and the per-class cosines carry signal there.
 
-The teacher rows are deterministic. The student rows are NOT -- cuDNN alone
-moved per-class neutral drift from 0.112 to 0.289 between two identical runs,
-which is larger than the CE-vs-KD difference it was being used to argue about.
-Students are therefore trained over several seeds and reported as mean +- sd,
-with every seed kept in shift_seeds.csv. Read any student column whose sd is
-comparable to the CE-vs-KD gap as "no difference measured".
+The teacher rows are deterministic, the student rows are not. cuDNN alone moved
+per-class neutral drift from 0.112 to 0.289 between two identical runs, which
+is bigger than the CE vs KD difference it was being used to argue about. So
+students are trained over several seeds and reported as mean +- sd, with every
+seed kept in shift_seeds.csv. Any student column whose sd is about the size of
+the CE vs KD gap should be read as no difference measured.
 
 Outputs (outputs/iemocap/analysis/):
     fig_split_shift.png          six panels, pooled embedding coloured by split

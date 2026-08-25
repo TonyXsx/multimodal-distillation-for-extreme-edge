@@ -1,38 +1,31 @@
 """
-Train the tiny audio-only IEMOCAP student, with and without distillation.
+Trains the tiny audio-only IEMOCAP student, with and without distillation.
 
-Six conditions, each over several seeds:
+Six conditions, several seeds each:
 
-    ce_only                 labels only -- the baseline everything is judged against
-    logit_kd                + KL to the teacher's own 4-way head
-    feature_kd_audio        + cosine to bottleneck(audio_mean_l27)   [clean audio target]
-    feature_kd_lasttoken    + cosine to bottleneck(last_token)       [privileged target]
-    full_kd_audio           logit + feature (clean)
-    full_kd_lasttoken       logit + feature (privileged)
+    ce_only                 labels only, the baseline
+    logit_kd                + KL to the teacher 4-way head
+    feature_kd_audio        + cosine to bottleneck(audio_mean_l27), clean target
+    feature_kd_lasttoken    + cosine to bottleneck(last_token), privileged
+    full_kd_audio           logit + feature, clean
+    full_kd_lasttoken       logit + feature, privileged
 
-Both feature targets are run because the probe results make the answer
-genuinely uncertain here, and in the opposite direction from MIntRec: on test
-the clean audio feature probes slightly ABOVE the privileged readout (UA
-0.7861 vs 0.7806). If that ordering carries into the student, then aligning a
-text-free student to a text-shaped representation is not the liability it was
-assumed to be -- at least once the teacher's audio tower has itself been
-adapted.
+Both feature targets get run because the probe results leave it genuinely
+uncertain here, and in the opposite direction from MIntRec - on test the clean
+audio feature probes slightly above the privileged readout (UA 0.7861 vs
+0.7806). If that carries into the student then aligning a text-free student to
+a text-shaped representation isn't the liability we assumed, at least once the
+teacher audio tower has been adapted too.
 
-Model selection is on validation UA (macro recall), matching the teacher
-stage, because the splits have different class priors. Test is evaluated once
-per run, using the val-selected checkpoint; no run picks its epoch by test.
+Selection is on val UA, matching the teacher stage, because the splits have
+different class priors. Test gets evaluated once per run using the val-selected
+checkpoint. No run picks its epoch by test.
 
-Everything except the loss is held fixed across conditions -- the tuned FSC
-recipe, reused unchanged (70 epochs, AdamW 1e-3/1e-4, batch 128, cosine
-schedule, label smoothing 0.1, SpecAugment, T=8, lambda=1.0/1.0). This stage
-introduces no new hyperparameter search.
+Everything except the loss is fixed across conditions: the tuned FSC recipe,
+reused as is (70 epochs, AdamW 1e-3/1e-4, batch 128, cosine, label smoothing
+0.1, SpecAugment, T=8, lambda 1.0/1.0). No new hyperparameter search here.
 
-Outputs:
-    outputs/iemocap/student/results.csv    one row per (method, seed)
-    outputs/iemocap/student/summary.csv    mean/std over seeds
-
-Usage:
-    python src/iemocap/student/train_student.py                       # all methods, 3 seeds
+    python src/iemocap/student/train_student.py                       # everything
     python src/iemocap/student/train_student.py --methods ce_only --seeds 42 --epochs 5
 """
 
@@ -59,9 +52,9 @@ from iemocap.student.kd_common import (  # noqa: E402
     load_teacher_signals, model_summary, normalizer,
 )
 
-# The two capacities from the FSC 2x2 study, unchanged: "strong" is DSResNetSE's
-# own defaults (the 2x2's `strong_factory`), "small" is its reduced channel plan.
-# For 4 classes: small 96,236 params / 0.37 MiB fp32; strong 377,748 / 1.44 MiB.
+# the two capacities from the FSC 2x2 study, unchanged. strong is DSResNetSE
+# defaults, small is the reduced channel plan. for 4 classes that is
+# small 96,236 params / 0.37 MiB fp32, strong 377,748 / 1.44 MiB
 STUDENTS = {
     "small":  {"channels": (16, 32, 64, 96, 128), "proj_hidden": None},
     "strong": {},
@@ -101,17 +94,16 @@ def evaluate(model, X, y, mu, sd, batch=256):
 
 def run(method, seed, data, epochs, t_kd=T_KD, student="small",
         lam_rkd=0.0, rkd_key="z_lasttoken", select="val_max"):
-    """`select` controls which checkpoint the reported test numbers come from.
+    """select decides which checkpoint the test numbers come from.
 
-    "val_max" takes the epoch with the highest validation UA, the usual
-    protocol. On this dataset that criterion is close to useless: across 15
-    hyperparameter points, validation UA at its own argmax correlates with
-    test UA at only r = 0.15, and the induced test spread is 6.0 points
-    against 3.8 for the final epoch. Validation is 1,241 utterances from two
-    speakers, so taking a maximum over 70 noisy epochs mostly selects luck.
+    "val_max" is the usual thing, the epoch with the highest val UA. On this
+    dataset that is nearly useless: over 15 hyperparameter points, val UA at
+    its own argmax correlates with test UA at r = 0.15, and the test spread it
+    induces is 6.0 points against 3.8 for the final epoch. Val is 1,241
+    utterances from two speakers, so a max over 70 noisy epochs is mostly
+    picking luck.
 
-    "final" ignores the maximum and reports the last epoch, which removes that
-    selection variance entirely.
+    "final" just reports the last epoch, which removes that variance.
     """
     lam_logit, lam_feat, feat_key = METHODS[method]
     torch.manual_seed(seed)
@@ -135,7 +127,7 @@ def run(method, seed, data, epochs, t_kd=T_KD, student="small",
         perm = torch.randperm(n)
         for i in range(0, n, BATCH_SIZE):
             idx = perm[i:i + BATCH_SIZE]
-            if len(idx) < 2:            # BatchNorm needs >1 sample
+            if len(idx) < 2:            # batchnorm needs more than 1
                 continue
             xb = ((Xtr[idx].float() - mu) / sd).unsqueeze(1).to(DEVICE)
             xb = spec_augment(xb)
@@ -158,12 +150,11 @@ def run(method, seed, data, epochs, t_kd=T_KD, student="small",
             best_ua, best_ep = m["ua"], ep + 1
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-    # The final-epoch model is scored too, not just the val-selected one.
-    # Validation here carries almost no class structure (silhouette ~0 for both
-    # CE and KD students), so selecting on val UA is a noisy criterion, and it
-    # keeps landing on epochs 12-37 of 70 -- while the cosine schedule still has
-    # the learning rate high. Recording both makes it visible whether a result
-    # is a property of the training or of the selection.
+    # score the final-epoch model as well as the val-selected one. val here has
+    # almost no class structure (silhouette ~0 for both CE and KD students) so
+    # selecting on val UA is noisy, and it keeps landing on epochs 12-37 of 70
+    # while the lr is still high. recording both shows whether a result comes
+    # from the training or from the selection
     fin_val = evaluate(model, Xva, yva, mu, sd)
     fin_test = evaluate(model, Xte, yte, mu, sd)
 
@@ -220,13 +211,11 @@ def main():
     teach = load_teacher_signals(ids_tr)
 
     if args.aug:
-        # Speed + VTLP copies of the training split. Each copy inherits its
-        # source utterance's teacher signals via orig_idx: the teacher heard the
-        # original audio, and its judgement does not change when the copy is
-        # played faster or with shifted formants. CE therefore gains N times the
-        # (input, label) pairs while KD gains N times the (input, TEACHER-OUTPUT)
-        # pairs -- the student has to reproduce one teacher response across
-        # input variation the teacher never saw.
+        # speed + VTLP copies of train. each copy inherits its source
+        # utterance's teacher signals through orig_idx - the teacher heard the
+        # original and its judgement doesn't change when the copy is faster or
+        # has shifted formants. so CE gets N times the (input, label) pairs
+        # while KD gets N times the (input, teacher output) pairs
         aug = torch.load(AUG_CACHE, weights_only=False)
         idx = aug["orig_idx"]
         teach = {k: v[idx] for k, v in teach.items()}

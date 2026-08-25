@@ -1,40 +1,27 @@
 """
-Precompute student-side inputs for MIntRec2.0: log-mel audio + low-res video
-frames, cached once to disk (mirrors fsc/student/precompute_logmel.py's
-rationale -- decoding video/audio every epoch across 10 KD conditions would
-dominate runtime).
+Caches the student inputs for MIntRec2.0: log-mel plus low-res video frames.
+Same reasoning as fsc/student/precompute_logmel.py - decoding video and audio
+every epoch across 10 KD conditions would take over the runtime.
 
-Reuses the SAME raw-media loading helpers as the teacher extraction scripts
-(fsc side has its own; here we import directly from
-mintrec.teacher_probe.extract_features_local: load_split_df, build_stem2path,
-find_video, load_audio, extract_frames) so sample ordering / ids are
-guaranteed consistent with how the teacher features were extracted.
+The raw-media helpers are imported from
+mintrec.teacher_probe.extract_features_local (load_split_df, build_stem2path,
+find_video, load_audio, extract_frames) rather than rewritten, so sample order
+and ids match how the teacher features were extracted.
 
-Audio: 16 kHz, n_fft=400 (25 ms), hop=160 (10 ms), n_mels=64, fmax=8000 --
-IDENTICAL mel config to FSC. Padded/truncated to MAX_SECONDS=6.0 (covers the
-bulk of MIntRec2.0 clip durations; a quick 40-clip check gave p50=2.4s,
-p90=4.2s, p95=5.0s, max=8.1s).
+Audio: 16 kHz, n_fft 400, hop 160, 64 mels, fmax 8000, same as FSC. Padded or
+cut to 6.0 s, which covers most MIntRec clips - a 40-clip check gave p50 2.4 s,
+p90 4.2, p95 5.0, max 8.1.
 
-Video: N_FRAMES=8 (matches the QLoRA teacher's frame count), resized to a
-fixed FRAME_SIZE x FRAME_SIZE (default 64) RGB thumbnail (simple resize, no
-aspect-ratio preservation -- this is a compact sanity-check student, not a
-production vision pipeline).
+Video: 8 frames, matching the teacher, resized to a 64x64 RGB thumbnail. Plain
+resize, no aspect ratio kept, this is a sanity-check student not a vision
+pipeline.
 
-Labels use the label2id embedded in the QLoRA teacher's own config.json
-(data/mintrec/teacher_qlora/.../config.json) -- NOT recomputed -- so the
-label id space here matches the extracted teacher `logits` dimension order
-exactly.
+Labels come from the label2id inside the QLoRA teacher config.json rather than
+being recomputed, so the id space matches the teacher logits dimension order.
 
-Output:
-    data/mintrec/student/feature_cache/
-        train_features.pt   { logmel, frames, labels, sample_ids, mean, std (mel stats) }
-        dev_features.pt     { logmel, frames, labels, sample_ids }
-        test_features.pt    { logmel, frames, labels, sample_ids }
-        config.json
-
-Splits whose cache file already exists are skipped (idempotent). Test is
-cached here too (the student needs it for the final one-shot eval) but NO
-teacher signal is ever attached to it -- that discipline lives in kd_common.py.
+Splits that already have a cache file are skipped. Test is cached here too
+since the student needs it for the final eval, but no teacher signal is ever
+attached to it - that rule lives in kd_common.py.
 """
 
 import json
@@ -80,17 +67,17 @@ def wav_to_logmel(wav):
     mel = librosa.feature.melspectrogram(y=wav, sr=SR, n_fft=N_FFT, hop_length=HOP,
                                           n_mels=N_MELS, fmax=FMAX)
     logmel = librosa.power_to_db(mel, ref=1.0)
-    return logmel.T.astype(np.float32)          # [T, n_mels]
+    return logmel.T.astype(np.float32)
 
 
 def frames_to_tensor(pil_frames):
     arr = np.stack([cv2.resize(np.array(f), (FRAME_SIZE, FRAME_SIZE)) for f in pil_frames])  # [F,H,W,3]
-    if arr.shape[0] < N_FRAMES:                 # pad by repeating the last frame
+    if arr.shape[0] < N_FRAMES:                 # repeat the last frame to pad
         pad = np.repeat(arr[-1:], N_FRAMES - arr.shape[0], axis=0)
         arr = np.concatenate([arr, pad], axis=0)
     elif arr.shape[0] > N_FRAMES:
         arr = arr[:N_FRAMES]
-    return arr.astype(np.uint8)                 # [N_FRAMES, H, W, 3]
+    return arr.astype(np.uint8)
 
 
 def process_split(df, s2p, label2id, limit=None):
@@ -117,7 +104,7 @@ def process_split(df, s2p, label2id, limit=None):
         labels.append(label2id[row["label"]])
         ids.append(row["id"])
     X_logmel = torch.stack(logmels).unsqueeze(1)                 # [N,1,T,64]
-    X_frames = torch.stack(frames_all)                           # [N,N_FRAMES,H,W,3] uint8
+    X_frames = torch.stack(frames_all)                           # uint8
     return X_logmel, X_frames, torch.tensor(labels, dtype=torch.long), ids, n_missing
 
 

@@ -1,36 +1,29 @@
 """
-Evaluate the LoRA-adapted IEMOCAP teacher on validation and held-out test.
+Evaluates the adapted IEMOCAP teacher on val and on held-out test.
 
-Discipline: the checkpoint is chosen by validation UA during training and this
-script evaluates THAT checkpoint once on test. It never scans epochs for the
-best test score. By default it reads `best_epoch` out of the run's
-`config.json` rather than taking it as an argument, so the selection cannot be
-quietly changed after seeing test numbers.
+The checkpoint is chosen on val UA during training, and this evaluates that
+checkpoint once on test. It never scans epochs for the best test score. By
+default it reads best_epoch out of the run config.json instead of taking it as
+an argument, so the choice cannot be quietly changed after seeing test numbers.
 
-Reported per split, and separately for the improvised and scripted slices:
+Per split, and separately for the improvised and scripted slices:
 
-    WA          weighted accuracy == plain accuracy
-    UA          unweighted accuracy == macro recall (the selection metric)
-    macro F1    unweighted F1
-    weighted F1 support-weighted F1
+    WA           weighted accuracy, i.e. plain accuracy
+    UA           unweighted accuracy, macro recall. the selection metric
+    macro F1
+    weighted F1
 
-The improvised/scripted split is the point of carrying `is_impro` in the
-manifest. The teacher reads transcripts, and scripted IEMOCAP dialogues reuse
-fixed lines whose wording correlates with the intended emotion. If the teacher
-is much stronger on the scripted slice, part of what looks like emotion
-recognition is recitation -- and that matters, because whatever the teacher
-knows for the wrong reason is what the student will be asked to imitate.
+The impro/scripted slice is why is_impro is in the manifest at all. The teacher
+reads transcripts, and scripted IEMOCAP dialogues reuse fixed lines whose
+wording correlates with the emotion. If the teacher is much better on the
+scripted slice then some of what looks like emotion recognition is recitation,
+and whatever the teacher knows for the wrong reason is what the student copies.
 
-Raw per-utterance predictions are written too, so any further slice (by
-speaker, by duration, by class) can be recomputed without another GPU pass.
+Per-utterance predictions get written too, so any other slice (speaker,
+duration, class) can be recomputed without another GPU pass.
 
-Outputs (all under outputs/iemocap/teacher_lora/):
-    eval_<tag>_summary.csv      one row per (split, slice)
-    eval_<tag>_per_class.csv    one row per (split, slice, class)
-    eval_<tag>_confusion.csv    confusion matrices, long form
-    eval_<tag>_predictions.csv  one row per utterance
+Everything lands under outputs/iemocap/teacher_lora/.
 
-Usage:
     python src/iemocap/teacher/eval_teacher.py \
         --run-dir data/iemocap/teacher_qlora/3b_bf16_audio-tr_r32a64
     python src/iemocap/teacher/eval_teacher.py --run-dir ... --epoch 2 --splits val

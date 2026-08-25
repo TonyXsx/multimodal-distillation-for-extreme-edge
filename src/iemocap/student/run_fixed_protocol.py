@@ -1,53 +1,46 @@
 """
-The fixed IEMOCAP measurement protocol, adopted 2026-08-22.
+The fixed IEMOCAP measurement protocol, settled on 2026-08-22.
 
 Everything before this used val-selected checkpoints, one to three seeds, and a
-configuration that drifted between batches. That is why the earlier numbers are
-archived under outputs/iemocap/student/exploratory/ rather than deleted: they
-are the evidence that the measurement, not the method, was the problem.
+config that drifted between batches. The old numbers are archived under
+outputs/iemocap/student/exploratory/ rather than deleted, because they are the
+evidence that the measurement was the problem, not the method.
 
-What is frozen here, and why each choice was made BEFORE seeing its result:
+What is fixed here, and why each choice was made before seeing its result:
 
-    SD split          the only protocol whose val is a valid proxy for test
-                      (val - test = -0.5pp, against SI's +2.9 to +5.7pp).
-                      Speaker leakage does not inflate the student: CE reaches
-                      0.5511 on SD and 0.5517 on SI. It only inflates the
-                      teacher, so the measurement gets trustworthy without the
+    SD split          the only protocol whose val is a decent proxy for test
+                      (val - test = -0.5pp, against +2.9 to +5.7pp on SI).
+                      Speaker leakage doesn't inflate the student - CE gets
+                      0.5511 on SD and 0.5517 on SI - it only inflates the
+                      teacher. So the measurement gets trustworthy without the
                       student's score moving.
-    fixed 70 epochs   no checkpoint selection at all. Selecting on val raises
-                      the criterion-flip noise to 6.8pp and, measured over four
-                      batches, hands CE 0.9-1.4pp more than it hands KD -- so
-                      dropping it is both the stricter and the fairer choice.
-    5 seeds, paired   every method runs seeds 42-46. Comparisons are paired
-                      against the CE rows with the same seed and the same
-                      config fingerprint, which is what makes a ~1pp effect
-                      readable against a 6.2pp between-configuration spread.
-    val AND test      both are always recorded. val exists for hyperparameter
-                      choice; test is the headline. Neither is ever used to
-                      pick an epoch.
+    fixed 70 epochs   no checkpoint selection at all. Selecting on val pushes
+                      the criterion-flip noise to 6.8pp and, over four batches,
+                      hands CE 0.9-1.4pp more than it hands KD, so dropping it
+                      is both stricter and fairer.
+    5 seeds, paired   every method runs seeds 42-46, paired against the CE rows
+                      with the same seed and the same config fingerprint. That
+                      is what makes a ~1pp effect readable against a 6.2pp
+                      between-config spread.
+    val and test      both always recorded. val is for hyperparameter choice,
+                      test is the headline, neither ever picks an epoch.
 
-Results append to ONE master CSV. CE therefore never needs re-running: later
-methods pair against the stored CE rows, provided `config_hash` matches. The
-hash covers the settings every method SHARES, so changing one of those shows up
-as a new group rather than silently corrupting the comparison -- while the
-lambdas and the feature target, which are what make a method a method, are
-recorded as plain columns and left out of the hash.
+Results append to one master csv, so CE never needs re-running - later methods
+pair against the stored CE rows as long as config_hash matches. The hash covers
+the settings every method shares, so changing one of those shows up as a new
+group instead of quietly corrupting the comparison. The lambdas and the feature
+target are recorded as plain columns and left out of the hash.
 
 Student embeddings are cached to data/iemocap/student{_sd}/z_cache/, so any
-later question about the readout can be answered without retraining anything.
+later question about the readout can be answered without retraining.
 
-Every method is scored twice, because they are not otherwise comparable:
+Every method gets scored twice, they aren't comparable otherwise:
 
-    head       the model's own classifier. Meaningless for feature_only, whose
-               classifier receives no gradient and stays at initialisation.
-    linprobe   logistic regression fitted on the TRAIN embeddings. The only
-               readout that treats all three objectives equally.
+    head       the model's own classifier. meaningless for feature_only, whose
+               classifier gets no gradient and stays at init.
+    linprobe   logistic regression on the train embeddings. the only readout
+               that treats all three objectives equally.
 
-Outputs:
-    outputs/iemocap/student/fixed_protocol_runs.csv     one row per (method, seed)
-    outputs/iemocap/student/fixed_protocol_summary.csv  means, sds, paired t vs CE
-
-Usage:
     IEMOCAP_PROTOCOL=sd python src/iemocap/student/run_fixed_protocol.py --methods ce
     IEMOCAP_PROTOCOL=sd python src/iemocap/student/run_fixed_protocol.py \
         --methods feature_kd feature_only
@@ -87,20 +80,20 @@ OUT = IEMOCAP_OUTPUTS / "student"
 RUNS_CSV = OUT / "fixed_protocol_runs.csv"
 ZCACHE = IEMOCAP_STUDENT / "z_cache"
 SUMMARY_CSV = OUT / "fixed_protocol_summary.csv"
-# resolved at run time: the LOSO folds are true leave-one-session-out and have
-# no validation set, so the val_* columns simply stay empty for those rows
+# resolved at run time. the LOSO folds have no val set, so the val_* columns
+# just stay empty on those rows
 SPLITS = available_splits()
 SEEDS = [42, 43, 44, 45, 46]
 
-# The target is in the name from here on. The first three keep their original
-# names because rows already exist for them in fixed_protocol_runs.csv; the
-# `feature_target` column disambiguates them.
+# the target goes in the name from here on. the first three keep their old names
+# because rows for them already exist in fixed_protocol_runs.csv, and the
+# feature_target column tells them apart.
 #
-# T = 2 is INHERITED from the archived SD batch that used this same protocol, not
-# re-selected here. That hands logit-KD the benefit of the earlier tuning while
-# the two-stage methods get none -- with lam_ce = 0 the cosine term is the only
-# loss, and under AdamW a constant rescaling of the only gradient cancels out of
-# m / sqrt(v), so lam_feature is not a tunable knob at all.
+# T = 2 is inherited from the archived SD batch on this same protocol, not
+# re-selected. that gives logit-KD the benefit of the earlier tuning and the
+# two-stage methods none - with lam_ce = 0 the cosine term is the only loss, and
+# under AdamW rescaling the only gradient cancels out of m / sqrt(v), so
+# lam_feature isn't a tunable knob at all
 METHODS = {
     "ce":                 dict(ce=1.0, logit=0.0, feat=0.0, target=None,         T=None),
     "logit_kd":           dict(ce=1.0, logit=1.0, feat=0.0, target=None,         T=2.0),
@@ -127,14 +120,13 @@ def metrics(y, p, prefix):
 
 
 def config_fingerprint():
-    """The settings SHARED by every method -- protocol, architecture, optimiser,
-    augmentation, reporting rule. Comparisons only pair rows whose fingerprint
-    matches, so a silently changed setting cannot masquerade as a method effect.
+    """the settings every method shares - protocol, architecture, optimiser,
+    augmentation, reporting rule. rows only pair if the fingerprint matches, so
+    a setting changed by accident can't look like a method effect.
 
-    Method-specific settings (lambdas, feature target, temperature) are recorded
-    as columns but deliberately NOT hashed: they are what distinguishes the
-    methods, so hashing them would put every method in its own group and leave
-    nothing to pair against.
+    The lambdas, feature target and temperature are recorded as columns but not
+    hashed. They are what makes a method a method, so hashing them would put
+    each one in its own group with nothing left to pair against.
     """
     cfg = {"protocol": PROTOCOL, "student": "small", "epochs": EPOCHS, "lr": LR,
            "weight_decay": WEIGHT_DECAY, "batch": BATCH_SIZE, "dropout": DROPOUT,
@@ -198,7 +190,7 @@ def summarise():
         return
     from scipy import stats
     df = pd.read_csv(RUNS_CSV)
-    # true LOSO has no val, so those columns are absent for those rows
+    # LOSO has no val, so those columns are missing on those rows
     keys = [k for k in ("test_ua", "test_wa", "test_macro_f1", "val_ua",
                         "linprobe_test_ua", "linprobe_val_ua") if k in df.columns]
     rows = []
@@ -212,7 +204,7 @@ def summarise():
                 r[f"{k}_mean"] = round(float(g[k].mean()), 4)
                 r[f"{k}_sd"] = round(float(g[k].std(ddof=1)) if len(g) > 1 else 0.0, 4)
             if m != "ce" and len(base):
-                # pair on seed; only seeds present in both sides count
+                # pair on seed, only seeds present on both sides count
                 j = g.merge(base, on="seed", suffixes=("", "_ce"))
                 for k in ("test_ua", "linprobe_test_ua"):
                     d = j[k] - j[f"{k}_ce"]
@@ -277,14 +269,13 @@ def main():
             out = run_one(spec, t_z, t_logits, data, seed)
 
             ztr, ytr_np, _ = out["train"]
-            # standardised: without it lbfgs stops at its iteration cap on the
-            # feature_only embeddings, which is exactly the row that depends on it
+            # standardise, otherwise lbfgs hits its iteration cap on the
+            # feature_only embeddings, which is the row that depends on it
             clf = make_pipeline(StandardScaler(),
                                 LogisticRegression(max_iter=5000)).fit(ztr, ytr_np)
 
-            # lam_* / kd_t are recorded but deliberately kept OUT of config_hash:
-            # they are what makes a method a method, so hashing them would put
-            # every method in its own group with no CE rows left to pair against
+            # lam_* and kd_t are recorded but kept out of config_hash on
+            # purpose, see config_fingerprint
             r = {"method": name, "seed": seed, "lam_ce": spec["ce"],
                  "lam_logit": spec["logit"], "lam_feature": spec["feat"],
                  "kd_t": spec["T"], "feature_target": feat_key, "config_hash": h, **cfg,
@@ -299,7 +290,7 @@ def main():
                   f"  | linprobe test {r['linprobe_test_ua']:.4f}"
                   f"  ({r['seconds']:.0f}s)", flush=True)
 
-            # keep the embeddings: re-deriving a readout must never cost a retrain
+            # keep the embeddings, redoing a readout shouldn't cost a retrain
             ZCACHE.mkdir(parents=True, exist_ok=True)
             torch.save({s: {"z": out[s][0], "y": out[s][1], "pred": out[s][2]}
                         for s in SPLITS},

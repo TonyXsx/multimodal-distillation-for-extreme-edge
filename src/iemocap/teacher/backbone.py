@@ -1,43 +1,36 @@
 """
-Backbone loading and the IEMOCAP-tuned LoRA configuration.
+Backbone loading and the LoRA config used for IEMOCAP.
 
-Two things differ from the MIntRec teacher, both deliberate.
+Two things differ from the MIntRec teacher, both on purpose.
 
-PRECISION -- bf16 by default, not 4-bit.
+bf16 by default instead of 4-bit. The "3B" in Qwen2.5-Omni-3B is misleading -
+the Thinker alone is 4.703 B params (LLM 3.086 + audio tower 0.638 + visual
+tower 0.669 + lm_head 0.311). Full fine-tuning is out of reach on one 24 GB
+card, since weights + grads + fp32 master + AdamW moments is about 16 bytes a
+parameter, so ~75 GB. LoRA on a bf16 base fits fine though: 9.4 GB frozen
+weights, ~1.5 GB adapter grads and optimiser state, 1-2 GB activations at batch
+1 with checkpointing.
 
-    "Qwen2.5-Omni-3B" is a misleading name: the Thinker alone is 4.703 B
-    parameters (LLM backbone 3.086 B + audio tower 0.638 B + visual tower
-    0.669 B + lm_head 0.311 B). Full fine-tuning it is out of reach on one
-    24 GB card -- weights + grads + fp32 master + AdamW moments is ~16 bytes
-    per parameter, i.e. ~75 GB. LoRA on a bf16 base, however, fits with room
-    to spare: 9.4 GB frozen weights + ~1.5 GB for the adapter's grads and
-    optimiser state + 1-2 GB of activations at batch 1 with checkpointing.
+MIntRec needed 4-bit because every sample carried 8 video frames. IEMOCAP is
+audio only at ~4.6 s mean duration so that memory isn't needed any more.
+Dropping quantisation also gets rid of a caveat the write-up would otherwise
+have to make, and skips a dequant step on every matmul, which is faster.
+--dtype 4bit is still there as a small-GPU fallback, but the two are not
+interchangeable - features have to be extracted at whatever precision the
+adapter was trained at.
 
-    MIntRec used 4-bit because each of its samples carried eight video frames;
-    IEMOCAP is audio-only at ~4.6 s mean duration, so the memory that bought
-    is no longer needed. Dropping quantisation also removes a caveat the
-    thesis currently has to state -- that the teacher is 4-bit and therefore
-    conservative -- and avoids a dequantisation step on every matmul, which
-    is simply faster. `--dtype 4bit` remains available for a small-GPU
-    fallback, but the two are NOT interchangeable: features must be extracted
-    at the precision the adapter was trained at.
+The LoRA coverage follows the task rather than MIntRec's module list. Counting
+the MIntRec adapter shows where its 82.2 M params went: 59.9 M to the LLM,
+14.4 M to the visual tower, and only 7.9 M to the audio tower - and that last
+bit was just q/k/v, because the target list uses LLM naming (o_proj, gate_proj,
+up_proj, down_proj) while the audio tower is Whisper-style and calls the same
+things out_proj, fc1, fc2. Those never matched.
 
-LoRA COVERAGE -- follows the task, not MIntRec's module list.
-
-    Inspecting the MIntRec adapter shows where its 82.2 M parameters actually
-    went: 59.9 M into the LLM, 14.4 M into the VISUAL tower, and only 7.9 M
-    into the audio tower -- and that last part covered just q/k/v, because
-    MIntRec's target list uses LLM naming (`o_proj`, `gate_proj`, `up_proj`,
-    `down_proj`) while the audio tower is Whisper-style and names the same
-    roles `out_proj`, `fc1`, `fc2`. Nothing matched them.
-
-    For a text-dominated intent task that hardly mattered. For emotion it
-    does: prosody is what the audio tower encodes, and it was the one
-    component left half-adapted. So here the audio tower is covered fully
-    (`out_proj`, `fc1`, `fc2` added), the visual tower is excluded outright
-    since this track has no video, and the audio tower is additionally given
-    a HIGHER rank than the language backbone -- capacity placed where the
-    task's signal lives rather than spread uniformly.
+For a text-heavy intent task that didn't matter much. For emotion it does,
+since prosody is exactly what the audio tower encodes and it was the one part
+left half-adapted. So here the audio tower is covered properly (out_proj, fc1,
+fc2 added), the visual tower is excluded since there's no video on this track,
+and the audio tower gets a higher rank than the language backbone.
 """
 
 import re
@@ -59,27 +52,26 @@ from mintrec.teacher_probe.qlora_finetune import get_hidden_size  # noqa: E402,F
 
 MODELS = {"3b": "Qwen/Qwen2.5-Omni-3B", "7b": "Qwen/Qwen2.5-Omni-7B"}
 
-# LLM decoder (Qwen2 naming) + audio tower (Whisper naming). `out_proj`, `fc1`
-# and `fc2` exist only in the audio tower; the rest only in the LLM.
+# LLM decoder uses Qwen2 naming, the audio tower uses Whisper naming. out_proj,
+# fc1 and fc2 only exist in the audio tower, the rest only in the LLM
 LORA_TARGETS = [
     "q_proj", "k_proj", "v_proj", "o_proj",        # LLM attention
     "gate_proj", "up_proj", "down_proj",           # LLM MLP
     "out_proj", "fc1", "fc2",                      # audio tower attention out + MLP
 ]
-# The visual tower reaches `gate_proj`/`up_proj`/`down_proj` by name too, which
-# is exactly how MIntRec leaked 14.4 M parameters into a branch this track
-# never feeds. Excluded by path.
+# the visual tower matches gate_proj/up_proj/down_proj by name as well, which is
+# how MIntRec leaked 14.4 M params into a branch it never fed. excluded by path
 LORA_EXCLUDE = r".*visual.*"
 
 AUDIO_PATTERN = r".*audio_tower.*"
 
 
 def load_thinker(model_name, dtype="bf16", device_map=None):
-    """Load Qwen2.5-Omni and drop the speech-generation half (Thinker only).
+    """load Qwen2.5-Omni and drop the speech-generation half.
 
-    Returns (model, processor); the caller uses `model.thinker`. The visual
-    tower is left loaded -- excluding it from LoRA is enough, and deleting it
-    risks breaking a forward pass that may still reference it.
+    Returns (model, processor), caller uses model.thinker. The visual tower
+    stays loaded - keeping it out of LoRA is enough, and deleting it might
+    break a forward pass that still references it.
     """
     kw = {"attn_implementation": "sdpa",
           "device_map": device_map if device_map is not None else {"": 0}}
@@ -104,9 +96,9 @@ def load_thinker(model_name, dtype="bf16", device_map=None):
 
 
 def build_lora_config(r=32, alpha=64, dropout=0.05, audio_r=64, audio_alpha=128):
-    """IEMOCAP LoRA: full LLM + full audio tower, no visual, audio at higher rank.
+    """full LLM plus full audio tower, no visual, audio at a higher rank.
 
-    `audio_r=0` falls back to a uniform rank everywhere.
+    audio_r=0 gives a uniform rank everywhere instead.
     """
     kw = dict(r=r, lora_alpha=alpha, lora_dropout=dropout, bias="none",
               target_modules=LORA_TARGETS, exclude_modules=LORA_EXCLUDE)
@@ -117,11 +109,11 @@ def build_lora_config(r=32, alpha=64, dropout=0.05, audio_r=64, audio_alpha=128)
 
 
 def describe_trainable(model, verbose=True):
-    """Per-component trainable-parameter breakdown.
+    """trainable params broken down per component.
 
-    Printed before training starts so the LoRA actually landed where intended
-    is verified rather than assumed -- the MIntRec adapter looked fine until
-    its tensors were counted.
+    Printed before training so I can see the LoRA actually landed where it was
+    supposed to. The MIntRec adapter looked fine until someone counted the
+    tensors.
     """
     groups, total, trainable = {}, 0, 0
     for name, p in model.named_parameters():

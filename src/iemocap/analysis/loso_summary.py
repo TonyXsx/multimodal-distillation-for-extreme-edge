@@ -1,28 +1,23 @@
 """
-Aggregate the five leave-one-session-out folds into the headline table.
+Rolls the five LOSO folds up into the headline table.
 
-The unit of analysis here is the FOLD, not the seed. Within a fold the five
-seeds are averaged first; the paired t-test then runs across the five folds
-against that fold's own CE. That is the right pairing because the thing being
-controlled for is how hard the held-out session is -- and the folds differ a
-lot on that (CE ranges 0.5013 to 0.5506). Pairing on seeds instead would treat
-the fold difficulty as noise and lose most of the power.
+The unit here is the fold, not the seed. Seeds get averaged within a fold
+first, then the paired t-test runs across the five folds against that fold's
+own CE. That's the right pairing because what needs controlling for is how hard
+the held-out session is, and the folds differ a lot on that (CE from 0.5013 to
+0.5506). Pairing on seeds would treat fold difficulty as noise and throw away
+most of the power.
 
-This is also why LOSO settles what the single splits could not. On one SI split
-the same method measured +2.24pp at p = 0.085; the variance there came from the
-split, not the initialisation, so more seeds could never have fixed it. Five
-folds leave the effect size essentially unchanged and take p to 0.0002.
+It's also why LOSO settles what the single splits couldn't. On one SI split the
+same method came out at +2.24pp, p = 0.085, and the variance there was from the
+split rather than the init, so no number of seeds would have fixed it. Five
+folds leave the effect size about the same and take p to 0.0002.
 
-Absolute numbers are NOT comparable to the single-split SI/SD studies: LOSO
-trains on four sessions (~4,400) against SI's three (3,205), and averages over
-folds that include the hardest session. Only the per-fold delta against CE
-transfers between studies.
+Absolute numbers don't compare to the single-split SI/SD studies. LOSO trains
+on four sessions (~4,400) against SI's three (3,205) and averages over folds
+that include the hardest session. Only the per-fold delta against CE carries
+between studies.
 
-Outputs (outputs/iemocap/student/):
-    loso_main_table.csv      per method: 5-fold mean, fold sd, delta, CI, p
-    loso_per_fold.csv        per method x fold: test UA and delta vs that fold's CE
-
-Usage:
     python src/iemocap/analysis/loso_summary.py
 """
 
@@ -41,7 +36,7 @@ ROOT = _SRC.parent
 OUT = ROOT / "outputs" / "iemocap" / "student"
 FOLDS = [f"loso{k}" for k in range(1, 6)]
 
-# label -> (encoder, stage-2 readout or None for the jointly trained head)
+# label -> (encoder, stage-2 readout, or None for the jointly trained head)
 METHODS = [
     ("2-stage, audio + mlp_kd",      "feature_only_audio", "mlp_kd"),
     ("2-stage, last_token + mlp_kd", "feature_only",       "mlp_kd"),
@@ -59,7 +54,7 @@ def main():
     st2 = pd.read_csv(OUT / "stage2_readout.csv")
 
     def per_fold(enc, readout):
-        """Seed-averaged test UA in each fold, in FOLDS order."""
+        """seed-averaged test UA per fold, in FOLDS order."""
         out = []
         for f in FOLDS:
             g = (runs[(runs.protocol == f) & (runs.method == enc)] if readout is None

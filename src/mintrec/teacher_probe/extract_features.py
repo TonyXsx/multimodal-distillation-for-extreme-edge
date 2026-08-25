@@ -1,47 +1,33 @@
 """
-Frozen multimodal-teacher hidden-representation extraction for MIntRec 2.0.
+Frozen teacher feature extraction for MIntRec2.0.
 
-Quick validation of the PRIVILEGED / cross-modal distillation setup:
-the teacher (Qwen2.5-Omni-3B, 4-bit) sees ALL THREE modalities, but we only
-pool the AUDIO-token hidden states - so a downstream audio-only student has a
-target it can (partially) reproduce while still benefiting from the video+text
-context the teacher absorbed via attention.
+A quick check on the privileged / cross-modal setup: the teacher sees all three
+modalities, but only the audio-token hidden states get pooled. So an audio-only
+student has a target it can partly reproduce while still picking up the video
+and text context the teacher absorbed through attention.
 
-Input layout (single forward pass, prompt_first):
+Input layout, one forward pass:
 
-    [ text (task prompt + transcript) ]  +  [ video frames ]  +  [ audio tokens ]
-                                                                  ^^^^^^^^^^^^^^^^
-    audio is placed LAST on purpose: under causal attention its token
-    representations attend over the preceding text + video, so the pooled
-    audio_mean vector carries the privileged multimodal information.
+    [ text (prompt + transcript) ] + [ video frames ] + [ audio tokens ]
 
-We feed video frames WITHOUT their audio track (use_audio_in_video=False) and
-supply the clip's audio as a separate `audio` part, so the audio tokens form one
-clean contiguous block at the end (locatable via the audio start/end markers).
+Audio goes last on purpose. Under causal attention its tokens attend over the
+text and video in front of them, so the pooled audio_mean carries the
+privileged information.
 
-Pooling (mirrors the FSC winner - prompt_first · audio_mean · mid/late layers):
+Video frames are fed without their audio track (use_audio_in_video=False) and
+the clip audio is supplied as a separate part, so the audio tokens form one
+contiguous block at the end that the start/end markers can locate.
+
+Pooling copies the FSC winner, prompt_first + audio_mean over mid/late layers:
 
     pf_audio_mean_l{L}            for L in [24, 27, 30, 34]
-    pf_audio_mean_L24-27-30-34    mean over those four layers
+    pf_audio_mean_L24-27-30-34    mean over the four
 
-Output (same format/habit as the FSC extractor):
+Same output format as the FSC extractor. Each .pt has labels, sample_ids
+(the MMLA id, dia_utt), metadata, feature_dim and a features dict of
+[N, hidden_dim] fp16 tensors.
 
-    data/teacher_features/<FEAT_TAG>/
-        train_features.pt
-        dev_features.pt
-        extraction_config.json
-
-Each .pt is a dict:
-    {
-        "labels":      LongTensor [N],
-        "sample_ids":  list[str],          # the MMLA 'id' = '{dia}_{utt}'
-        "metadata":    list[dict],
-        "feature_dim": int,
-        "features":    {name: FloatTensor[N, hidden_dim] (float16), ...},
-    }
-
-Usage:
-    python extract_features.py --split all              # train + dev, full
+    python extract_features.py --split all              # train + dev
     python extract_features.py --split dev --limit 50   # smoke test
 """
 
@@ -58,7 +44,7 @@ if sys.platform == "win32":
     _ffmpeg_dll_dir = None
     for _p in os.environ.get("PATH", "").split(";"):
         if _p and os.path.exists(os.path.join(_p, "avcodec-62.dll")):
-            _ffmpeg_dll_dir = os.add_dll_directory(_p)  # keep ref alive
+            _ffmpeg_dll_dir = os.add_dll_directory(_p)  # keep the ref alive
             break
 
 import librosa
@@ -79,17 +65,17 @@ if str(_SRC) not in sys.path:
 from common.config import MINTREC_DATA   # noqa: E402
 
 
-ANNO_DIR  = MINTREC_DATA / "MIntRec2.0"          # train/dev/test.tsv live here
-VIDEO_DIR = ANNO_DIR / "video"                   # extracted .mp4 clips
+ANNO_DIR  = MINTREC_DATA / "MIntRec2.0"          # the tsvs live here
+VIDEO_DIR = ANNO_DIR / "video"                   # extracted mp4 clips
 
 
 def build_feat_tag(dtype):
-    """FEAT_TAG carries the teacher precision so fp16/bf16/4bit runs never clash."""
+    """the precision goes in FEAT_TAG so bf16 and 4bit runs never collide."""
     return f"mintrec2.0_multimodal__qwen2.5-omni-3b-{dtype}__pf_text-video-audio__audiomean"
 
 
 MODEL_NAME    = "Qwen/Qwen2.5-Omni-3B"
-LLM_LAYERS    = [24, 27, 30, 34]                 # FSC-winning mid/late layers
+LLM_LAYERS    = [24, 27, 30, 34]                 # the layers that won on FSC
 MEAN_COMBO    = "L24-27-30-34"
 ADD_GEN_PROMPT = True
 SHARD_SIZE        = 50
@@ -98,11 +84,11 @@ EMPTY_CACHE_EVERY = 5
 AUDIO_START_ID_DEFAULT = 151647
 AUDIO_END_ID_DEFAULT   = 151648
 
-# Labels are derived from the TSVs at runtime (see build_label2id) rather than
-# hard-coded - the MMLA label strings may differ in casing/wording from the
-# official benchmark config, and we must not silently drop a whole class.
+# labels come from the tsvs at runtime rather than being hardcoded. the MMLA
+# strings differ in casing/wording from the official config, and getting that
+# wrong would silently drop a whole class
 
-# Task prompt carries the transcript (the 'text' modality) + a brief framing.
+# the prompt carries the transcript, i.e. the text modality, plus some framing
 TASK_PROMPT_TEMPLATE = (
     "You are analyzing a short TV-show clip to recognize the speaker's intent "
     "among 30 fine-grained intent classes. "
@@ -123,7 +109,7 @@ def load_split_df(name):
 
 
 def build_label2id(dfs):
-    """Deterministic label->id from the actual TSV label strings (sorted)."""
+    """label->id built from the actual tsv strings, sorted so it is stable."""
     labels = sorted({l for df in dfs for l in df["label"].unique()})
     return {l: i for i, l in enumerate(labels)}
 
@@ -141,13 +127,12 @@ def find_video(row, stem2path):
 
 
 def load_teacher(dtype="bf16"):
-    """dtype in {bf16, 4bit}. bf16 = full precision (cleanest KD target - matches
-    the teacher's training dtype, needs ~7GB VRAM); 4bit = bnb NF4 (low-VRAM
-    fallback, e.g. a 6GB laptop GPU)."""
-    # sdpa (not eager): mathematically equivalent softmax attention, but fused -
-    # it never materializes the full [heads, seq, seq] fp32 score matrix, so memory
-    # is ~linear instead of quadratic in seq_len. hidden_states are unchanged.
-    # (Long MIntRec clips = many vision+audio tokens; eager OOMs on a 22GB GPU.)
+    """dtype is bf16 or 4bit. bf16 is the cleaner KD target and matches the
+    teacher training dtype, needs ~7GB. 4bit is the low-vram fallback."""
+    # sdpa rather than eager. same softmax attention but fused, so it never
+    # builds the full [heads, seq, seq] fp32 score matrix and memory is roughly
+    # linear in seq_len instead of quadratic. hidden_states come out the same.
+    # long MIntRec clips have a lot of vision+audio tokens and eager OOMs on 22GB
     model_kwargs = dict(device_map="auto", attn_implementation="sdpa")
     if dtype == "4bit":
         model_kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -189,11 +174,11 @@ def _to_cpu_fp16(t):
 
 
 def pool_audio_mean(hidden_states, audio_idx):
-    """audio_mean over the audio-token block, per layer + a mean-over-layers combo."""
+    """audio_mean over the audio-token block, per layer plus the combo."""
     feats = {}
     per_layer = []
     for L in LLM_LAYERS:
-        v = hidden_states[L][0][audio_idx].mean(dim=0)       # [hidden_dim]
+        v = hidden_states[L][0][audio_idx].mean(dim=0)
         feats[f"pf_audio_mean_l{L}"] = _to_cpu_fp16(v)
         per_layer.append(v)
     combo = torch.stack(per_layer, dim=0).mean(dim=0)
@@ -202,7 +187,7 @@ def pool_audio_mean(hidden_states, audio_idx):
 
 
 def build_inputs(processor, model, transcript, video_path, wav):
-    """prompt_first, content order = [text, video(frames-only), audio]; audio LAST."""
+    """order is [text, video frames, audio], audio last."""
     conversation = [{
         "role": "user",
         "content": [
@@ -214,7 +199,7 @@ def build_inputs(processor, model, transcript, video_path, wav):
     text_input = processor.apply_chat_template(
         conversation, add_generation_prompt=ADD_GEN_PROMPT, tokenize=False
     )
-    # use_audio_in_video=False -> video contributes frames only; audio is the separate part
+    # use_audio_in_video=False, so video is frames only and audio is its own part
     audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
     inputs = processor(
         text=text_input, audio=audios, images=images, videos=videos,
@@ -351,7 +336,7 @@ def main():
     audio_end_id   = get_special_id(model, "audio_end_token_id", AUDIO_END_ID_DEFAULT)
     print(f"audio_start_token_id={audio_start_id}  audio_end_token_id={audio_end_id}")
 
-    # Shared, deterministic label map built from BOTH splits' TSVs (naming-robust).
+    # one label map built from both splits, so naming differences cant bite
     dfs = {s: load_split_df(s) for s in ("train", "dev")}
     label2id = build_label2id(dfs.values())
     print(f"Found {len(label2id)} intent classes: {list(label2id)}")

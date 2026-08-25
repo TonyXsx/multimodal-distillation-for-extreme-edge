@@ -1,32 +1,28 @@
 """
-LOCAL frozen-teacher hidden-feature extraction for MIntRec2.0 - parametrized.
+The local version of the MIntRec2.0 extraction, with knobs.
 
-Same teacher / pooling as the production extract_features.py, but built to run on a
-small local GPU (tested: 6.4 GB RTX 3060, 4-bit, ~2.3 s/sample) and to sweep the
-inputs we want to compare:
+Same teacher and pooling as extract_features.py, but it fits on a small GPU
+(tested on a 6.4 GB 3060, 4-bit, ~2.3 s/sample) and can sweep the inputs:
 
-  --dtype       4bit (local default) | bf16
-  --frames N    sub-sample N frames per clip (even; 0 = full clip, the old behaviour)
-  --modalities  tva (text+video+audio)  | ta (text+audio, NO video)
-  --prompt      plain                   | aware  (tells the teacher to attend to tone/face)
+  --dtype       4bit (default here) or bf16
+  --frames N    subsample N frames per clip, even. 0 means the whole clip
+  --modalities  tva (text+video+audio) or ta (text+audio, no video)
+  --prompt      plain or aware. aware tells the teacher to attend to tone/face
 
-Input layout (prompt_first, audio LAST so its tokens absorb the preceding context):
+Layout, audio last so its tokens pick up the context in front of them:
     tva: [ text(prompt+transcript) ] + [ video frames ] + [ audio ]
-    ta : [ text(prompt+transcript) ]                     + [ audio ]
-use_audio_in_video=False; pool audio_mean over the audio-token block at layers
-[24,27,30,34] (+ mean). Sharded + resume-safe, like the production extractor.
+    ta : [ text(prompt+transcript) ]                    + [ audio ]
 
-Every knob is encoded in FEAT_TAG so runs never collide, e.g.
+use_audio_in_video=False, audio_mean pooled over the audio block at layers
+[24,27,30,34] plus their mean. Sharded and resumable like the other one.
+
+Every knob goes into FEAT_TAG so runs never collide, e.g.
     mintrec2.0__qwen2.5-omni-3b-4bit__pf_text-video4f-audio__aware__audiomean
     mintrec2.0__qwen2.5-omni-3b-4bit__pf_text-audio__plain__audiomean
-All outputs land under data/mintrec/teacher_features/<FEAT_TAG>/ (data/ -> E:).
 
-Usage:
-    # smoke (5 samples), default 4bit / 4 frames / tva / plain
     python src/mintrec/teacher_probe/extract_features_local.py --split dev --limit 5
-    # the requested variants:
-    python .../extract_features_local.py --split all --prompt aware                 # aware prompt, T+V+A
-    python .../extract_features_local.py --split all --modalities ta                # audio+transcript only
+    python .../extract_features_local.py --split all --prompt aware
+    python .../extract_features_local.py --split all --modalities ta
 """
 
 import argparse
@@ -156,7 +152,7 @@ def extract_frames(path, n_frames, max_side=FRAME_MAX_SIDE):
     cap.release()
     if not frames:
         raise RuntimeError(f"no frames from {path}")
-    if len(frames) % 2 == 1:                       # Qwen temporal patch = 2 -> even count
+    if len(frames) % 2 == 1:                       # qwen temporal patch is 2, needs even
         frames = frames[:-1] if len(frames) > 1 else frames + frames
     return frames
 
@@ -289,7 +285,7 @@ def process_split(model, proc, df, s2p, label2id, a0, a1, shard_dir, args):
             feats, m = extract_sample(model, proc, text, frames, wav, a0, a1)
         except Exception as ex:
             print(f"  skip {row['id']}: {type(ex).__name__}: {ex}")
-            if torch.cuda.is_available():          # recover from a transient OOM / bad clip
+            if torch.cuda.is_available():          # recover from a transient OOM or bad clip
                 torch.cuda.empty_cache(); gc.collect()
             continue
         for k, v in feats.items():

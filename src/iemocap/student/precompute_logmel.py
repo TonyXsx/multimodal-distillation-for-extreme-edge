@@ -1,24 +1,18 @@
 """
-Pre-compute log-mel spectrograms for the IEMOCAP student, once.
+Log-mel cache for the IEMOCAP student. Run once.
 
-Same mel configuration as FSC and MIntRec so the three students are directly
-comparable: 16 kHz, n_fft=400 (25 ms), hop=160 (10 ms), n_mels=64, fmax=8000.
+Same mel config as FSC and MIntRec so the three students compare directly:
+16 kHz, n_fft 400 (25 ms), hop 160 (10 ms), 64 mels, fmax 8000.
 
-The only thing that changes is the fixed clip length. IEMOCAP utterances are
-long-tailed -- mean 4.55 s, p50 3.58, p90 8.69, p95 11.06, max 34.14 -- so
-8.0 s is used: it covers roughly the 90th percentile without paying for the
-tail, where padding would dominate the input. (FSC used 3 s, MIntRec 6 s.)
-DSResNet-SE global-average-pools before its projection head, so the clip
-length changes compute but not parameter count.
+Only the clip length changes. IEMOCAP durations are long-tailed - mean 4.55 s,
+p50 3.58, p90 8.69, p95 11.06, max 34.14 - so 8.0 s, which covers about the
+90th percentile without paying for the tail where padding would take over the
+input. FSC used 3 s and MIntRec 6 s. DSResNet-SE pools globally before the
+projection head, so clip length changes compute but not parameter count.
 
-Longer utterances are centre-cropped rather than truncated from the start:
-the emotionally salient part of a turn is not reliably at its beginning.
+Long utterances are centre-cropped rather than cut from the start, since the
+emotional part of a turn isn't reliably at the beginning.
 
-Outputs:
-    data/iemocap/student/logmel/{train,val,test}.pt   X [N, T, 64] float16, labels, ids
-    data/iemocap/student/logmel/config.json
-
-Usage:
     python src/iemocap/student/precompute_logmel.py
     python src/iemocap/student/precompute_logmel.py --splits val --limit 20
 """
@@ -46,7 +40,7 @@ OUT_DIR = IEMOCAP_STUDENT / "logmel"
 
 
 def fit_length(wav):
-    """Centre-crop or right-pad the waveform to exactly TARGET_LEN."""
+    """centre-crop or right-pad to TARGET_LEN."""
     n = len(wav)
     if n > TARGET_LEN:
         start = (n - TARGET_LEN) // 2
@@ -71,7 +65,7 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for split in args.splits:
         df = load_split(split, limit=args.limit)
-        if df.empty:                      # true LOSO has no val
+        if df.empty:                      # LOSO has no val
             print(f"{split}: absent in this protocol's manifest, skipping")
             continue
         X, ids, labels, n_crop = [], [], [], 0

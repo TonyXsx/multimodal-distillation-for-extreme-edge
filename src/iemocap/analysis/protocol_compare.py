@@ -1,33 +1,27 @@
 """
-Speaker-independent vs speaker-dependent: is the teacher's feature space
-actually better under SD, or only easier to score?
+SI vs SD. Is the teacher feature space actually better under SD, or just easier
+to score?
 
-The two protocols share everything -- same 5,531 utterances, same LoRA teacher,
-same extraction code -- and differ only in how the utterances are split:
+The two protocols share everything - same 5,531 utterances, same LoRA teacher,
+same extraction code - and differ only in the split:
 
-    SI   sessions 2,3,4 train | session 5 val | session 1 test  (no shared speakers)
-    SD   stratified on speaker x emotion, 60/20/20              (all 10 speakers everywhere)
+    SI   sessions 2,3,4 / 5 / 1, no shared speakers
+    SD   stratified on speaker x emotion, 60/20/20, all 10 speakers everywhere
 
-So any difference in the numbers below is caused by the split and nothing else.
-Two separate things are worth telling apart, and the probe UA alone conflates
-them:
+So any difference below comes from the split and nothing else. Two things worth
+separating, which probe UA on its own runs together:
 
-    QUALITY      how separable the classes are inside each split
-    CONSISTENCY  whether val and test agree with train, and with each other
+    quality      how separable the classes are inside each split
+    consistency  whether val and test agree with train, and with each other
 
-A representation can score well on the first and badly on the second -- that is
-exactly what SI does, and it is why val was a poor proxy for test there.
+A representation can do well on the first and badly on the second, which is
+exactly what SI does, and why val was a bad proxy for test there.
 
-The 64-d row is the Feature-KD target. Its probe is retrained here per protocol
-under the identical recipe used by teacher_probe/probe_features.py (50 epochs,
-AdamW 1e-3/1e-4, batch 256, dropout 0.1, train-only standardisation), in memory
-and without touching the saved SI checkpoints.
+The 64-d row is the feature-KD target. Its probe is retrained per protocol
+here, same recipe as teacher_probe/probe_features.py (50 epochs, AdamW
+1e-3/1e-4, batch 256, dropout 0.1, train-only standardisation), in memory,
+without touching the saved SI checkpoints.
 
-Outputs (outputs/iemocap/analysis/):
-    protocol_compare.csv        every metric, per protocol x representation x split
-    fig_protocol_compare.png    class separability, SI vs SD, per split
-
-Usage:
     python src/iemocap/analysis/protocol_compare.py
     python src/iemocap/analysis/protocol_compare.py --features last_token
 """
@@ -55,11 +49,11 @@ OUT = IEMOCAP_OUTPUTS / "analysis"
 SPLITS = ("train", "val", "test")
 FEATS = ("audio_mean_l27", "last_token")
 TAG = "iemocap4__qwen2.5-omni-3b-bf16-LORA__adapter_ep3__audio-tr"
-# the two feature roots differ only by the split the teacher was tuned/extracted on
+# the two feature roots differ only in which split the teacher saw
 PROTOCOLS = {"SI": IEMOCAP_DATA / "teacher_features" / TAG,
              "SD": IEMOCAP_DATA / "teacher_features_sd" / TAG}
 
-# identical to teacher_probe/probe_features.py -- do not drift from it
+# same as teacher_probe/probe_features.py, keep it that way
 EPOCHS, LR, WEIGHT_DECAY, BATCH_SIZE, DROPOUT, BOTTLENECK, SEED = 50, 1e-3, 1e-4, 256, 0.1, 64, 42
 
 
@@ -136,7 +130,7 @@ def main():
                 X, y = std[s]
                 z, pred = bottleneck(probe, X)
                 lo[s] = (z, y.numpy())
-                # UA = macro recall, the metric used everywhere else in this project
+                # UA is macro recall, same metric as everywhere else here
                 ua[s] = round(float(np.mean([
                     (pred[y.numpy() == c] == c).mean() for c in range(int(ytr.max()) + 1)])), 4)
 

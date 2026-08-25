@@ -1,45 +1,36 @@
 """
-Why does KD lift validation and never test? A representation-level diagnosis.
+Why does KD lift val and never test? Looking at the representations instead.
 
-Nine KD configurations -- two temperatures, three targets, centred and
-uncentred, three seeds each -- have now shown the same split: validation UA
-above the CE baseline, test UA at or below it. Two rounds of hyperparameter
-changes did not move the direction, so this stops tuning and asks what the
-representations themselves look like.
+Nine KD configs so far - two temperatures, three targets, centred and
+uncentred, three seeds each - all show the same thing: val UA above the CE
+baseline, test UA at or below it. Two rounds of hyperparameter changes didn't
+move the direction, so stop tuning and look at what the representations
+actually are.
 
-Four questions, each with a number attached:
+Four questions, each with a number attached.
 
-1. Does the TEACHER's class structure survive the move to unseen speakers?
-   Separability and k-NN transfer are computed on train, val and test
-   separately. If the teacher's embedding is sharply class-structured on train
-   and much less so on test, then what the student is asked to copy is partly
-   train-specific and cannot help on test by construction.
+1. Does the teacher class structure survive unseen speakers? Separability and
+   kNN transfer on train, val and test separately. If the teacher embedding is
+   sharply class-structured on train and much less so on test, then what the
+   student copies is partly train-specific and can't help on test.
 
-2. Is the teacher's embedding entangled with SPEAKER? Leave-one-out k-NN on
-   speaker identity, against the majority rate. IEMOCAP has two speakers per
-   session and disjoint speakers across splits, so any speaker structure the
-   student copies is guaranteed not to transfer.
+2. Is the teacher embedding entangled with speaker? Leave-one-out kNN on
+   speaker identity against the majority rate. IEMOCAP has two speakers per
+   session and no overlap across splits, so any speaker structure the student
+   copies definitely won't transfer.
 
-3. Does KD actually reshape the STUDENT's embedding toward the teacher's? A CE
-   student and a KD student are trained here and their bottlenecks compared to
-   the teacher's on the same utterances. If the KD student's embedding is no
-   more teacher-like than the CE student's, the loss is not doing what it is
-   supposed to; if it is more teacher-like and still no better on test, then
-   the teacher's structure is simply not what this task needs at this capacity.
+3. Does KD actually pull the student embedding toward the teacher? Trains a CE
+   student and a KD student here and compares their bottlenecks against the
+   teacher on the same utterances. If the KD one is no more teacher-like then
+   the loss isn't doing its job. If it is more teacher-like and still no better
+   on test, then the teacher structure just isn't what this task needs at this
+   capacity.
 
-4. Which classes get conflated, and is it the same pair for teacher and
-   student? Class-centroid cosine, both sides.
+4. Which classes get conflated, and is it the same pair on both sides?
+   Class-centroid cosine.
 
-Every figure also writes its numbers to CSV -- a plot is never the only record.
+Every figure writes its numbers to csv too, a plot is never the only record.
 
-Outputs (outputs/iemocap/analysis/):
-    separability.csv          per (representation, split): within/between/gap, silhouette
-    knn_transfer.csv          fit on train, evaluate on val and test
-    speaker_entanglement.csv  leave-one-out speaker k-NN vs majority rate
-    centroid_*.csv            class-centroid cosine per representation
-    fig_*.png                 faceted embeddings, bars, heatmaps
-
-Usage:
     python src/iemocap/analysis/diagnose_kd.py
     python src/iemocap/analysis/diagnose_kd.py --no-student --embed pca
 """
@@ -79,10 +70,10 @@ SPLITS = ("train", "val", "test")
 
 
 def teacher_bottleneck(feature_key="audio_mean_l27"):
-    """Teacher 64-d bottleneck for every split, via the saved probe.
+    """teacher 64-d bottleneck per split, through the saved probe.
 
-    Test is included here deliberately: this is a statement about the teacher's
-    own representation, not a signal handed to the student.
+    Test is included on purpose. This is about the teacher's representation,
+    it isn't a signal being handed to the student.
     """
     ck = torch.load(PROBE_DIR / feature_key / "checkpoint.pt", weights_only=False)
     probe = Probe(ck["in_dim"], [ck["bottleneck"]], len(ck["classes"]), dropout=0.0)
@@ -99,7 +90,7 @@ def teacher_bottleneck(feature_key="audio_mean_l27"):
 
 
 def train_student(kind, data, epochs, seed=42):
-    """Train one student and return its bottleneck on every split."""
+    """train one student, return its bottleneck on every split."""
     Xtr, ytr, mu, sd, teach, evalsets = data
     lam_logit, lam_feat = (0.0, 0.0) if kind == "ce" else (LAM_LOGIT, LAM_FEATURE)
     torch.manual_seed(seed)
@@ -168,7 +159,7 @@ def main():
             for s, (z, y) in train_student(kind, data, args.epochs).items():
                 reps[(name, s)] = (z, y)
 
-    # 1 + 2. separability and speaker entanglement
+    # 1 and 2, separability and speaker entanglement
     sep_rows, spk_rows = [], []
     for (name, split), (Z, y) in reps.items():
         sep_rows.append({"representation": name, "split": split, "n": len(y),
@@ -184,7 +175,7 @@ def main():
     print("\n=== speaker entanglement (leave-one-out kNN on speaker id) ===")
     print(spk.to_string(index=False))
 
-    # 3. transfer: fit on train, score val and test
+    # 3, transfer. fit on train, score val and test
     knn_rows = []
     for name in dict.fromkeys(n for n, _ in reps):
         Ztr, ytr_ = reps[(name, "train")]
@@ -197,7 +188,7 @@ def main():
     print("\n=== kNN transfer (fit on train, no training) ===")
     print(knn.to_string(index=False))
 
-    # 4. which classes get conflated
+    # 4, which classes get conflated
     for name in dict.fromkeys(n for n, _ in reps):
         Z, y = reps[(name, "test")]
         cs = class_centroid_similarity(Z, y, CLASSES)

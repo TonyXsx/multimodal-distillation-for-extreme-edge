@@ -1,31 +1,24 @@
 """
-Is "neutral" just the speaker's own voice?
+Is neutral just the speaker's own voice?
 
-Every split-shift measurement so far has put neutral last: it is the lowest
-train-test centroid cosine in all six representations, and in the student it is
-also the noisiest by a factor of three to five. The proposed explanation is
-mechanical rather than statistical -- neutral is not an emotion the speaker
-performs, it is the absence of one, so its class centroid is whatever that
-speaker's ordinary voice sounds like. Change the speakers and the centroid
-moves with them.
+Every split-shift measurement puts neutral last. Lowest train-test centroid
+cosine in all six representations, and in the student it's also the noisiest by
+a factor of three to five. The explanation I think is right is mechanical, not
+statistical: neutral isn't an emotion the speaker performs, it's the absence of
+one, so its class centroid is just whatever that speaker's ordinary voice
+sounds like. Swap the speakers and the centroid moves.
 
-That explanation makes a prediction that can be checked directly, with no
-training: WITHIN each class, ask how well the SPEAKER can be identified from
-the teacher's features alone. If neutral really is the speaker's baseline, its
-utterances should carry speaker identity more strongly than angry, happy or sad
-ones do, because nothing is overwriting it.
+That makes a prediction you can check without training anything. Within each
+class, how well can the speaker be identified from the teacher features alone?
+If neutral really is the speaker baseline then its utterances should carry
+speaker identity more strongly than angry, happy or sad, because nothing is
+painting over it.
 
-Two controls keep this honest:
+Two controls: pool all 10 speakers so the split doesn't confound it, and
+subsample every class to the size of the smallest so the kNN task is equally
+hard for all four. Speaker ID gets easier with less data and neutral is the
+biggest class.
 
-    all 10 speakers are pooled, so the question is not confounded by the split
-    each class is subsampled to the size of the smallest, so the k-NN task is
-        equally hard for all four (speaker ID gets easier with fewer classes'
-        worth of data, and neutral is the largest class)
-
-Outputs (outputs/iemocap/analysis/):
-    neutral_baseline.csv     per-class speaker identifiability, per representation
-
-Usage:
     python src/iemocap/analysis/neutral_is_baseline.py
     python src/iemocap/analysis/neutral_is_baseline.py --repeats 20
 """
@@ -80,14 +73,13 @@ def main():
         reps[f"teacher {key} [2048]"] = hi
         reps[f"teacher {key} [64]"] = lo
 
-    # Speaker identifiability says whether speaker information is PRESENT inside a
-    # class. It does not say whether that information moves the class CENTROID,
-    # which is what a split shift actually measures -- speaker cues can sit in
-    # directions orthogonal to the centroid and never disturb it. So the second
-    # measurement is the one that matches the claim directly: how far apart the
-    # ten per-speaker centroids of a class are. A class whose speaker centroids
-    # disagree has no stable direction of its own, and its centroid becomes a
-    # property of whoever happened to be sampled.
+    # speaker identifiability only says the speaker info is present inside a
+    # class. it doesn't say that info moves the class centroid, which is what a
+    # split shift measures - speaker cues can sit orthogonal to the centroid and
+    # never disturb it. so the second measurement matches the claim better: how
+    # far apart the ten per-speaker centroids of a class are. if they disagree
+    # the class has no stable direction and its centroid is just a property of
+    # whoever got sampled
     rows = []
     for name, per_split in reps.items():
         Z = np.concatenate([per_split[s][0] for s in SPLITS])

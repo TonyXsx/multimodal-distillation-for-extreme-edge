@@ -1,40 +1,33 @@
 """
-What does the 64-d Feature-KD target actually look like, and would MSE differ
-from the cosine loss we use?
+What does the 64-d feature-KD target look like, and would MSE be any different
+from the cosine loss?
 
-The two losses are closer than they appear. For L2-normalised vectors,
+The two are closer than they look. For L2-normalised vectors,
 
     || a/|a| - b/|b| ||^2  =  2 - 2 cos(a, b)
 
-so "MSE on normalised features" IS the cosine loss up to a factor of two. The
-only thing raw MSE adds is a demand that the student reproduce the target's
-MAGNITUDE as well as its direction. Whether that is signal or noise is an
-empirical question about the target, and it is answered here without training
-anything:
+so MSE on normalised features is the cosine loss up to a factor of 2. The only
+extra thing raw MSE asks for is that the student reproduce the magnitude as
+well as the direction. Whether that is signal or noise is a question about the
+target, answerable without training anything:
 
-    energy split      how the squared-error budget MSE would optimise divides
-                      into DC (the direction every sample shares), between-class
-                      (the part that carries the label) and within-class (the
-                      part that does not).
-    norm information  whether |z| alone predicts the class at all, and whether
-                      it merely tracks the teacher's confidence.
+    energy split      how the squared-error budget divides into DC (the shared
+                      direction), between-class (carries the label) and
+                      within-class (doesn't)
+    norm information  whether |z| alone predicts the class, and whether it just
+                      tracks teacher confidence
 
-If between-class energy is a small slice and the norm carries no class signal,
-raw MSE spends most of the student's 96k parameters reproducing quantities that
-cannot improve its decision boundary -- and the student's bottleneck is a
-BatchNorm output, whose scale is fixed by construction, so it cannot even
-comply without distorting the part that matters.
+If between-class energy is a small slice and the norm has no class signal, then
+raw MSE spends most of the student's 96k parameters on quantities that can't
+move its decision boundary. And the student bottleneck is a BatchNorm output
+whose scale is fixed anyway, so it couldn't comply without wrecking the part
+that matters.
 
-Teacher z comes from Linear -> LayerNorm -> GELU, so it is per-sample
-normalised and mostly non-negative before anything here touches it. Student z
-is BatchNorm1d, so it is per-dimension zero-mean and symmetric. Those are
-different geometries, which is the second reason raw MSE is a strange fit.
+Teacher z comes out of Linear -> LayerNorm -> GELU, so it's per-sample
+normalised and mostly non-negative. Student z is BatchNorm1d, so per-dimension
+zero-mean and symmetric. Different geometries, which is the other reason raw
+MSE is an odd fit.
 
-Outputs (outputs/iemocap/analysis/):
-    target_geometry.csv        energy split and norm statistics per target
-    target_norm_by_class.csv   per-class mean |z|, and what a norm-only classifier gets
-
-Usage:
     python src/iemocap/analysis/feature_target_geometry.py
 """
 
@@ -58,7 +51,7 @@ KEYS = ("audio_mean_l27", "last_token")
 
 
 def energy_split(Z, y):
-    """Decompose E||z||^2 into DC + between-class + within-class."""
+    """split E||z||^2 into DC + between-class + within-class."""
     mu = Z.mean(0)
     total = float((Z ** 2).sum(1).mean())
     dc = float((mu ** 2).sum())
@@ -76,7 +69,7 @@ def energy_split(Z, y):
 
 def norm_stats(Z, y, k=10):
     n = np.linalg.norm(Z, axis=1)
-    # can the class be read off the magnitude alone? 1-D leave-one-out k-NN.
+    # can you read the class off the magnitude alone? 1-d leave-one-out knn
     order = np.argsort(n)
     ns, ys = n[order], y[order]
     hits = np.zeros(len(n), dtype=bool)
