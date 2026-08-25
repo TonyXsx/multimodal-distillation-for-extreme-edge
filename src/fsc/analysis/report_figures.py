@@ -151,43 +151,66 @@ def feature_selection():
 
 # ---------------------------------------------------------------- figure 2
 def probe_compression():
-    p = pd.read_csv(FSC / "teacher_probe" / "results.csv")
-    b = p[p.id.str.startswith("B")].copy()
-    c = p[p.id.str.startswith("C")].copy()
-    b["bottleneck"] = b.bottleneck.astype(int)
-    c["bottleneck"] = c.bottleneck.astype(int)
-    linear = float(p[p.id == "A1"].eval_acc.iloc[0])
-    upper = float(p[p.id == "A3"].eval_acc.iloc[0])
+    p = pd.read_csv(FSC / "teacher_probe" / "results.csv").set_index("id")
 
-    fig, ax = plt.subplots(figsize=(5.8, 3.6), facecolor=SURFACE)
-    lo, hi = min(linear, upper), max(linear, upper)
-    ax.axhspan(lo, hi, color=INK_MUTED, alpha=0.16, linewidth=0, zorder=1)
-    ax.text(31.2, hi + 0.0035, "probes with no bottleneck", fontsize=7.5,
-            color=INK_MUTED)
+    # (probe id, tick label) in the order they are drawn
+    baseline = [("A1", "none")]
+    one_layer = [("B1", "32"), ("B2", "64"), ("B3", "128"), ("B4", "256"),
+                 ("A2", "1024"), ("A3", "2048")]
+    two_layer = [("C1", "32"), ("C2", "64"), ("C3", "128")]
 
-    ax.plot(b.bottleneck, b.eval_acc, "-o", color=HIGHLIGHT, linewidth=2.0,
-            markersize=5, label="one projection", zorder=3)
-    ax.plot(c.bottleneck, c.eval_acc, "-s", color=MUTED, linewidth=1.4,
-            markersize=4.2, label="two projections, via 512", zorder=2)
+    groups = [("linear baseline", baseline, [0.0]),
+              ("one hidden layer", one_layer, list(np.arange(1.5, 7.5, 1.0))),
+              ("two hidden layers, via 512", two_layer, [9.0, 10.0, 11.0])]
 
-    sel = b[b.bottleneck == 64]
-    y64 = float(sel.eval_acc.iloc[0])
-    ax.scatter([64], [y64], s=110, facecolor="none", edgecolor=HIGHLIGHT,
-               linewidth=1.4, zorder=4)
-    ax.annotate("64: the target the student is aligned to", xy=(64, y64),
-                xytext=(64, 0.9425), fontsize=7.8, color=HIGHLIGHT, ha="center",
-                arrowprops=dict(arrowstyle="-", color=HIGHLIGHT, linewidth=0.8,
-                                shrinkA=2, shrinkB=6))
+    xs, labels, acc, f1 = [], [], [], []
+    for _, items, positions in groups:
+        for (pid, lab), x in zip(items, positions):
+            xs.append(x)
+            labels.append(lab)
+            acc.append(float(p.loc[pid, "eval_acc"]))
+            f1.append(float(p.loc[pid, "eval_macro_f1"]))
+    xs = np.array(xs)
 
-    ax.set_xscale("log", base=2)
-    ax.set_xticks([32, 64, 128, 256])
-    ax.set_xticklabels([32, 64, 128, 256])
-    ax.set_xlabel("bottleneck dimension", fontsize=8.5, color=INK_SOFT)
-    ax.set_ylabel("validation accuracy", fontsize=8.5, color=INK_SOFT)
-    ax.set_ylim(0.900, 0.980)
-    ax.legend(fontsize=7.5, frameon=False, loc="lower right", labelcolor=INK_SOFT)
+    fig, ax = plt.subplots(figsize=(8.8, 3.9), facecolor=SURFACE)
+    w = 0.38
+    ax.bar(xs - w / 2, acc, width=w * 0.92, color=PALETTE[0], edgecolor="none",
+           label="accuracy", zorder=3)
+    ax.bar(xs + w / 2, f1, width=w * 0.92, color=PALETTE[1], edgecolor="none",
+           label="macro-F1", zorder=3)
+
+    # the linear probe is the thing every other row has to beat
+    ax.axhline(acc[0], color=INK_SOFT, linestyle="--", linewidth=1.0, zorder=4)
+    ax.text(0.62, acc[0] + 0.0005, "linear probe", fontsize=7.5, color=INK_SOFT,
+            ha="left")
+
+    # ring the width that becomes the student's target
+    sel = list(labels).index("64")
+    ax.annotate("used for the student", xy=(xs[sel], 0.9641), xytext=(xs[sel], 0.9668),
+                fontsize=7.6, color=INK_SOFT, ha="center",
+                arrowprops=dict(arrowstyle="-", color=INK_SOFT, linewidth=0.8,
+                                shrinkA=1, shrinkB=1))
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylim(0.944, 0.9705)
+    ax.set_ylabel("validation score, 31 intent classes", fontsize=8.5, color=INK_SOFT)
+    ax.set_xlabel("hidden layer width", fontsize=8.5, color=INK_SOFT, labelpad=30)
+    ax.legend(fontsize=8, frameon=False, loc="lower right", ncol=2,
+              bbox_to_anchor=(1.0, 1.005), labelcolor=INK_SOFT)
     _style(ax)
-    ax.set_title("Compressing the teacher representation", fontsize=12, color=INK,
+
+    # group names under the tick labels, with a rule spanning each group
+    tr = ax.get_xaxis_transform()
+    for name, items, positions in groups:
+        lo, hi = min(positions), max(positions)
+        pad = 0.42 if lo != hi else 0.42
+        ax.plot([lo - pad, hi + pad], [-0.105, -0.105], color=GRID, linewidth=1.2,
+                transform=tr, clip_on=False, zorder=5)
+        ax.text((lo + hi) / 2, -0.135, name, fontsize=8, color=INK_SOFT,
+                ha="center", va="top", transform=tr)
+
+    ax.set_title("Teacher probe architectures", fontsize=12, color=INK,
                  loc="left", pad=8)
     fig.tight_layout()
     _save(fig, "fig_fsc_probe.png")
