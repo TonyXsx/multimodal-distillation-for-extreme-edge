@@ -1,25 +1,15 @@
 """
-Bottleneck probe for the frozen HuBERT-large audio-only teacher (FSC).
+Bottleneck probe on the frozen HuBERT teacher.
 
-Mirrors fsc/teacher_probe/train_probe.py's B2 architecture and protocol
-EXACTLY (same fixed hyperparameters, same "val is the final eval set, no
-early stopping" rule), so the HuBERT teacher's own accuracy is directly
-comparable to the Qwen teacher's B2 row in the main README. No architecture
-sweep is run here -- per the (no-ablation) scope of this baseline, only the
-bottleneck=64 config is trained, because that is the only one the KD student
-scripts consume (Feature-KD target dim = 64, matching DSResNetSE.proj_dim).
+Same B2 architecture and same protocol as fsc/teacher_probe/train_probe.py, so
+this number sits directly next to the Qwen B2 row. No architecture sweep here,
+only bottleneck=64, since that's the only one the student scripts use (the
+feature-KD target has to match DSResNetSE.proj_dim).
 
-Protocol (identical constants to fsc/teacher_probe/train_probe.py):
-  50 epochs, AdamW(lr=1e-3, wd=1e-4), batch 256, dropout 0.1, CE loss.
-  Standardize with TRAIN mean/std. Report eval acc/macro-F1 ONCE, after
-  training, on FSC validation -- same convention as the Qwen probe: val is
-  this stage's final evaluation set, there is no separate "test" here.
-
-Outputs:
-  data/teacher_probe/fsc_full__hubert-large-ll60k__last_layer_mean/checkpoints/B2_*.pt
-  data/teacher_probe/fsc_full__hubert-large-ll60k__last_layer_mean/bottleneck_reps/B2_bottleneck64.pt
-  outputs/fsc/hubert_baseline/teacher_probe/results.csv
-  outputs/fsc/hubert_baseline/teacher_probe/results.md
+Constants copied from the Qwen probe: 50 epochs, AdamW(1e-3, wd 1e-4), batch
+256, dropout 0.1, CE, standardised with train mean/std. Acc and macro-F1
+reported once at the end on FSC val. Like the Qwen probe, val is this stage's
+final eval set and there is no separate test.
 """
 
 import csv
@@ -48,7 +38,7 @@ OUT_PLOT = OUTPUTS_ROOT / "fsc" / "hubert_baseline" / "teacher_probe"
 for d in (CKPT_DIR, REP_DIR, OUT_PLOT):
     d.mkdir(parents=True, exist_ok=True)
 
-# Fixed hyperparameters -- IDENTICAL to fsc/teacher_probe/train_probe.py.
+# same hyperparameters as fsc/teacher_probe/train_probe.py
 EPOCHS = 50
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -68,7 +58,7 @@ def load_features():
     ytr = tr["labels"].long()
     yva = va["labels"].long()
 
-    # Standardize with TRAIN statistics only (same rule as the Qwen probe).
+    # train stats only, same rule as the Qwen probe
     mean = Xtr.mean(dim=0, keepdim=True)
     std = Xtr.std(dim=0, keepdim=True).clamp_min(1e-6)
     Xtr_n = (Xtr - mean) / std
@@ -103,7 +93,7 @@ def main():
             loss.backward()
             opt.step()
 
-    # Final eval (once) -- no early stopping / model selection on val.
+    # eval once. no early stopping, no selection on val
     model.eval()
     with torch.no_grad():
         tr_pred = model(Xtr_d).argmax(1)
@@ -124,7 +114,7 @@ def main():
     }, ckpt_path)
     print(f"Checkpoint -> {ckpt_path}")
 
-    # Export bottleneck representations (train+val) -- KD target for the student.
+    # export the bottleneck, this is what the student distills from
     model.eval()
     with torch.no_grad():
         _, btr = model(Xtr_d, return_bottleneck=True)

@@ -1,30 +1,28 @@
 """
-IEMOCAP student facade: cached inputs, teacher signals, shared constants.
+IEMOCAP student side: cached inputs, teacher signals, shared constants.
 
-Discipline carried over from FSC and MIntRec:
-  * student inputs come from the pre-computed log-mel cache, never re-decoded
-    during training;
-  * teacher signals exist for TRAIN only -- test never receives one;
-  * a strict id assert ties inputs to teacher signals, so a silent
-    misalignment between the two caches cannot happen.
+Same discipline as the FSC and MIntRec tracks. Inputs come from the log-mel
+cache and are never re-decoded during training, teacher signals exist for train
+only so test never gets one, and an id assert ties the two caches together so
+they can't quietly go out of sync.
 
-Teacher signals (all pre-computed, nothing here re-runs the teacher):
+Teacher signals, all precomputed, nothing here re-runs the teacher:
 
-    logits   [N, 4]   the LoRA head's own output -- always the Logit-KD target
-    z_audio  [N, 64]  bottleneck probe on `audio_mean_l27` (adapted arm)
-    z_last   [N, 64]  bottleneck probe on `last_token` (adapted arm)
+    logits   [N, 4]   the LoRA head output, always the logit-KD target
+    z_audio  [N, 64]  bottleneck probe on audio_mean_l27
+    z_last   [N, 64]  bottleneck probe on last_token
 
-Both feature targets are kept because which one is right is an empirical
-question this dataset can finally answer. On MIntRec every student sat on the
-macro-F1 ~0.06 noise floor, so the comparison there was meaningless. Here the
-probe results already point the other way from MIntRec: on held-out test the
-CLEAN audio feature (`audio_mean_l27`, UA 0.7861) edges out the privileged
-readout (`last_token`, 0.7806), because this time the audio tower itself was
-adapted. If that ordering survives into the student, the "aligning a
-text-free student to a text-shaped target" worry is settled for this setting.
+Both feature targets are kept because which one is right is a question this
+dataset can actually answer - on MIntRec every student sat on the macro-F1
+noise floor so the comparison meant nothing. The probe results here already
+point the other way from MIntRec: on test the clean audio feature
+(audio_mean_l27, UA 0.7861) just beats the privileged readout (last_token,
+0.7806), because this time the audio tower was adapted too. If that ordering
+holds up in the student then the worry about aligning a text-free student to a
+text-shaped target is answered for this setting.
 
-Training constants are the tuned FSC recipe, unchanged, so nothing here is a
-new hyperparameter search: T=8, lambda_logit = lambda_feature = 1.0.
+Training constants are the tuned FSC recipe, reused as is. No new search here:
+T=8, lambda_logit = lambda_feature = 1.0.
 """
 
 import sys
@@ -45,12 +43,12 @@ LOGMEL_DIR = IEMOCAP_STUDENT / "logmel"
 BOTTLENECK_DIR = IEMOCAP_PROBE / "bottleneck" / "adapted"
 ADAPTED_FEATS = find_adapted_features()
 
-# Student architecture: the FSC "small" DSResNet-SE, unchanged.
+# the FSC small DSResNet-SE, unchanged
 SMALL_KW = {"channels": (16, 32, 64, 96, 128), "proj_hidden": None}
 PROJ_DIM = 64
 N_CLASSES = len(CLASSES)
 
-# Tuned FSC recipe, reused verbatim.
+# tuned FSC recipe, reused as is
 EPOCHS = 70
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -66,8 +64,8 @@ FEATURE_TARGETS = {"audio": "audio_mean_l27", "lasttoken": "last_token"}
 
 
 def available_splits():
-    """Splits with a log-mel cache. The LOSO folds are true leave-one-session-out
-    and have no validation set, so callers must ask rather than assume."""
+    """which splits have a log-mel cache. the LOSO folds have no val set, so ask
+    instead of assuming."""
     return tuple(s for s in ("train", "val", "test") if (LOGMEL_DIR / f"{s}.pt").exists())
 
 
@@ -77,17 +75,17 @@ def load_inputs(split):
 
 
 def normalizer(Xtr):
-    """Train-set mean/std over the log-mel cache (float32 for stability)."""
+    """train mean/std over the log-mel cache, in fp32."""
     x = Xtr.float()
     return x.mean(), x.std().clamp_min(1e-6)
 
 
 def load_teacher_signals(ids):
-    """Teacher logits + both 64-d bottleneck targets, aligned to `ids`.
+    """teacher logits and both 64-d targets, aligned to ids.
 
-    Raises if the orderings disagree rather than silently zipping mismatched
-    rows -- the two caches are produced by different scripts and only agree
-    because both iterate the manifest in its stored order.
+    Raises if the orders disagree instead of zipping mismatched rows. The two
+    caches come from different scripts and only line up because both walk the
+    manifest in its stored order.
     """
     feats = torch.load(ADAPTED_FEATS / "train_features.pt", weights_only=False)
     if list(feats["sample_ids"]) != list(ids):

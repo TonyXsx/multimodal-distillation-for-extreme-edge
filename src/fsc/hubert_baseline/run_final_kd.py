@@ -1,24 +1,16 @@
 """
-Final held-out TEST evaluation for the frozen HuBERT-large audio-only
-teacher baseline (see README.md in this folder for the full rationale).
+Final test run for the HuBERT baseline. README in this folder has the why.
 
-Deliberately a close mirror of fsc/student/final_test.py -- same small
-DSResNet-SE student, same fixed KD hyperparameters (T=8, lam_logit=1.0,
-lam_feature=1.0), same 4 methods (CE-only / Logit-KD / Feature-KD / Full-KD),
-same protocol (best-by-val-macroF1 checkpoint, evaluated ONCE on the held-out
-FSC test split). The ONLY thing that changes between this script and
-final_test.py is which frozen teacher produced ztr/ltr: HuBERT-large-ll60k
-(audio-only) here vs Qwen2.5-Omni (multimodal, prompted) there.
+Close mirror of fsc/student/final_test.py: same small student, same KD
+hyperparameters (T=8, lam_logit=1.0, lam_feature=1.0), same four methods, same
+protocol of picking on val and touching test once. The only thing that changes
+is which teacher produced ztr/ltr.
 
-SMALL_KW / T_KD / LAM_LOGIT / LAM_FEATURE / METHODS / load_test() are
-imported directly from final_test.py (not retyped), so the two runs cannot
-silently drift apart on model size or KD config.
+SMALL_KW, T_KD, LAM_LOGIT, LAM_FEATURE, METHODS and load_test() are imported
+from final_test.py rather than retyped, so the two runs can't drift apart on
+model size or KD config.
 
-Outputs (kept separate from the Qwen run -- nothing here overwrites it):
-  data/student/hubert_final_test_checkpoints/<method>.pt
-  outputs/fsc/hubert_baseline/final_test/results.csv
-  outputs/fsc/hubert_baseline/final_test/comparison.csv        (+ Qwen numbers, read-only overlay)
-  outputs/fsc/hubert_baseline/final_test/final_test_comparison.png
+Outputs go somewhere separate, nothing here overwrites the Qwen run.
 """
 
 import csv
@@ -86,14 +78,14 @@ def run(method, train_data, val_data, Xte, yte):
             opt.step()
         sched.step()
 
-        m_val = evaluate(model, Xva, yva)               # VAL: checkpoint selection only
+        m_val = evaluate(model, Xva, yva)               # selection only
         if m_val["macro_f1"] > best_f1:
             best_f1 = m_val["macro_f1"]
             best_val = m_val
             best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-    # Evaluate the selected checkpoint ONCE on the held-out TEST split.
+    # the one test pass
     model.load_state_dict(best_state)
     m_test = evaluate(model, Xte, yte)
 
@@ -150,7 +142,7 @@ def main():
 
 
 def make_comparison(hubert_results):
-    """Read-only overlay against the existing Qwen final_test/results.csv, if present."""
+    """overlay the Qwen final_test results if they're there. read-only."""
     qwen_results = None
     if QWEN_RESULTS_CSV.exists():
         with open(QWEN_RESULTS_CSV, newline="", encoding="utf-8") as f:

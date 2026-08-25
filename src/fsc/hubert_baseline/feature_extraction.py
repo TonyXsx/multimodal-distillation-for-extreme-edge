@@ -1,40 +1,26 @@
 """
-Frozen HuBERT-large audio-only teacher: feature extraction for the FSC baseline.
+Frozen HuBERT-large as an audio-only teacher. This is the control for the Qwen
+one, so the KD comparison can separate "any strong frozen teacher helps" from
+"the prompted multimodal teacher helps". README in this folder has the rest.
 
-Companion to src/fsc/frozen_feature_extraction (Qwen). Purpose: give the
-prompted multimodal Qwen2.5-Omni teacher an audio-only control, so the KD
-comparison can separate "any strong frozen teacher helps" from "the
-multimodal/prompted teacher specifically helps". See README.md in this
-folder for the full rationale and protocol.
+Model is facebook/hubert-large-ll60k, the plain SSL checkpoint (masked
+prediction of kmeans cluster ids over 60k h of unlabelled Libri-Light). No text
+or ASR fine-tuning anywhere in its history. The -ls960-ft variant would be
+wrong here, CTC fine-tuning on transcripts puts text supervision back in and
+kills the point of an audio-only control.
 
-Model: facebook/hubert-large-ll60k -- the plain SSL-pretrained checkpoint
-(masked prediction of k-means cluster ids over Libri-Light, 60k h of
-UNLABELED speech). No text or ASR fine-tuning anywhere in this checkpoint's
-history, unlike e.g. the "-ls960-ft" CTC-finetuned variant, which must NOT
-be used here since CTC fine-tuning against transcripts would reintroduce
-text supervision and defeat the point of an audio-only control.
+Feature is the final layer, mean-pooled over time. No layer or prompt-order
+ablation this time, the Qwen side already answered that and this baseline is
+deliberately scoped not to repeat it. Standard frozen-SSL pooling, same recipe
+SUPERB uses.
 
-Feature: mean-pooled over time, final transformer layer hidden states.
-No layer/prompt-order ablation is run here -- the Qwen-side ablation already
-answered "which representation is best" for that teacher, and this baseline
-is explicitly scoped to skip a repeat ablation; the single standard
-frozen-SSL pooling recipe (as used throughout the SUPERB benchmark) is used
-as-is.
+Train and val only. Test stays teacher-free for the same reason as in
+full_feature_extraction.py.
 
-Splits: train + validation only. Test is intentionally NOT extracted --
-mirrors frozen_feature_extraction/full_feature_extraction.py's rationale:
-the final student is audio-only and test must stay teacher-free to avoid
-leakage.
+Sample order and ids come from precompute_logmel.load_fsc() by import rather
+than being redone, so the ids line up with the existing logmel cache.
 
-Sample order / ids / labels come from fsc.student.precompute_logmel.load_fsc()
-(imported, not duplicated), so sample_ids line up 1:1 with the existing
-data/student/logmel_cache/*.pt used by the student KD scripts.
-
-Output (same dict schema as the Qwen teacher_features banks):
-    data/teacher_features/fsc_full__hubert-large-ll60k__last_layer_mean/
-        train_features.pt
-        val_features.pt
-        extraction_config.json
+Same output schema as the Qwen banks.
 """
 
 import io
@@ -71,14 +57,14 @@ def extract_split(ds, model, extractor):
         input_values = inputs["input_values"].to(DEVICE)
         out = model(input_values, output_hidden_states=True)
         last = out.hidden_states[-1][0]                               # [T', hidden]
-        feat = last.mean(dim=0).float().cpu().to(torch.float16)       # [hidden]
+        feat = last.mean(dim=0).float().cpu().to(torch.float16)
 
         feats.append(feat)
         labels.append(int(ex["label_id"]))
         ids.append(str(ex.get("file", i)))
         metas.append({"num_samples": int(len(wav)), "num_frames": int(last.shape[0])})
 
-    X = torch.stack(feats)                              # [N, hidden]
+    X = torch.stack(feats)
     return X, torch.tensor(labels, dtype=torch.long), ids, metas
 
 

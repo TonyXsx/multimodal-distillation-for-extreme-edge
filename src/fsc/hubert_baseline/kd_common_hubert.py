@@ -1,11 +1,11 @@
 """
-HuBERT-teacher facade for the FSC student KD scripts (audio-only-teacher
-baseline). Mirrors fsc/student/kd_common.py's build_teacher_signals() /
-load_data(), pointed at the frozen HuBERT-large probe instead of Qwen's.
-Everything else (student log-mel cache, training constants, generic
-losses/eval/augment) is imported UNCHANGED from kd_common, so the KD recipe
-is byte-identical to the Qwen run -- teacher identity is the only variable
-that differs between the two pipelines.
+Same as fsc/student/kd_common.py but pointed at the HuBERT probe instead of the
+Qwen one.
+
+Only build_teacher_signals() and load_data() are redefined. The log-mel cache,
+training constants, losses, eval and augmentation are all imported from
+kd_common unchanged, so the two pipelines differ in exactly one thing: which
+teacher produced the signals.
 """
 
 import sys
@@ -30,8 +30,7 @@ PROBE_CKPT_DIR = DATA / "teacher_probe" / FEAT_TAG / "checkpoints"
 
 
 def build_teacher_signals():
-    """Return dict split -> (z_64 [N,64], logits [N,31], sample_ids) from the
-    HuBERT B2-equivalent probe."""
+    """split -> (z_64 [N,64], logits [N,31], sample_ids), from the HuBERT probe."""
     ckpt_path = next(PROBE_CKPT_DIR.glob("B2_*.pt"))
     ckpt = torch.load(ckpt_path, weights_only=False)
     mean, std = ckpt["standardizer"]["mean"], ckpt["standardizer"]["std"]
@@ -52,9 +51,8 @@ def build_teacher_signals():
 
 
 def load_data():
-    """Returns (Xtr, ytr, ztr, ltr), (Xva, yva, zva, lva): normalized log-mel
-    (identical cache to the Qwen run) + aligned HuBERT-teacher bottleneck (z)
-    and teacher logits (l)."""
+    """(Xtr, ytr, ztr, ltr), (Xva, yva, zva, lva). Same log-mel cache as the Qwen
+    run, with the HuBERT bottleneck and logits aligned to it."""
     tr = torch.load(LOGMEL / "train_logmel.pt", weights_only=False)
     va = torch.load(LOGMEL / "val_logmel.pt", weights_only=False)
     mean = tr["mean"].view(1, 1, 1, -1)
@@ -68,7 +66,7 @@ def load_data():
     ztr, ltr, idtr = teacher["train"]
     zva, lva, idva = teacher["val"]
 
-    # Critical: teacher signals and student inputs must be the same samples, same order.
+    # same samples in the same order, or everything downstream is wrong
     assert tr["sample_ids"] == idtr, "TRAIN sample_id mismatch (student vs HuBERT teacher)"
     assert va["sample_ids"] == idva, "VAL sample_id mismatch (student vs HuBERT teacher)"
 
