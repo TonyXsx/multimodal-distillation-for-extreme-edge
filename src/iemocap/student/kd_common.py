@@ -36,7 +36,7 @@ if str(_SRC) not in sys.path:
 from common.losses import kd_feature_loss, kd_logit_loss, rkd_loss  # noqa: E402,F401
 from common.models.audio_student import DSResNetSE, model_summary  # noqa: E402,F401
 from common.training import DEVICE  # noqa: E402,F401
-from iemocap.paths import IEMOCAP_PROBE, IEMOCAP_STUDENT, find_adapted_features  # noqa: E402
+from iemocap.paths import IEMOCAP_PROBE, IEMOCAP_STUDENT, TEACHER, find_adapted_features  # noqa: E402
 from iemocap.teacher.data import CLASSES  # noqa: E402
 
 LOGMEL_DIR = IEMOCAP_STUDENT / "logmel"
@@ -60,7 +60,10 @@ LAM_LOGIT = 1.0
 LAM_FEATURE = 1.0
 SEED = 42
 
-FEATURE_TARGETS = {"audio": "audio_mean_l27", "lasttoken": "last_token"}
+# the hubert teacher has no prompt and no transcript, so it has an audio
+# target and nothing to put opposite it
+FEATURE_TARGETS = ({"audio": "audio_mean_l27", "lasttoken": "last_token"} if TEACHER == "qwen"
+                   else {"audio": "hubert_mean_l18"})
 
 
 def available_splits():

@@ -71,14 +71,14 @@ from sklearn.preprocessing import StandardScaler
 _SRC = next(p for p in Path(__file__).resolve().parents if p.name == "src")
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
-from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
+from iemocap.paths import PROTOCOL, TSUF, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
 from common.losses import kd_logit_loss  # noqa: E402
 from iemocap.student.kd_common import (  # noqa: E402
     DEVICE, LABEL_SMOOTH, N_CLASSES, WEIGHT_DECAY, load_inputs, load_teacher_signals,
 )
 
 OUT = IEMOCAP_OUTPUTS / "student"
-ZCACHE = IEMOCAP_STUDENT / "z_cache"
+ZCACHE = IEMOCAP_STUDENT / f"z_cache{TSUF}"
 # resolved from the cached embeddings, the LOSO folds have no val set
 SPLITS = ("train", "val", "test")
 # 300 full-batch steps at lr 1e-3 left the linear head badly underfitted on the
@@ -215,7 +215,7 @@ def main():
     # one file holds every protocol and the path has no protocol suffix, so a
     # plain overwrite would wipe the other protocol's whole grid. merge instead
     # and only replace the cells this run recomputed
-    csv = OUT / "stage2_readout.csv"
+    csv = OUT / f"stage2_readout{TSUF}.csv"
     if csv.exists():
         prev = pd.read_csv(csv)
         if "protocol" in prev.columns:
@@ -236,7 +236,7 @@ def main():
         print("\n=== val UA by readout (mean over seeds) ===")
         print(df.pivot_table(index="method", columns="readout", values="val_ua",
                              aggfunc="mean").round(4).to_string())
-    print("\n-> %s" % (OUT / "stage2_readout.csv"))
+    print("\n-> %s" % csv)
 
 
 if __name__ == "__main__":

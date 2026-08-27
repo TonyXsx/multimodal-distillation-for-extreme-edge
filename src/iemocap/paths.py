@@ -41,6 +41,15 @@ if PROTOCOL not in _PROTOCOLS:
     raise ValueError(f"IEMOCAP_PROTOCOL must be one of {_PROTOCOLS}, got {PROTOCOL!r}")
 _SUF = "" if PROTOCOL == "si" else f"_{PROTOCOL}"
 
+# which teacher produced the KD targets, picked the same way. qwen leaves every
+# path exactly as it was, hubert puts its adapters, features and probes beside
+# them rather than on top of them
+TEACHER = os.environ.get("IEMOCAP_TEACHER", "qwen").lower()
+if TEACHER not in ("qwen", "hubert"):
+    raise ValueError(f"IEMOCAP_TEACHER must be qwen or hubert, got {TEACHER!r}")
+TSUF = "" if TEACHER == "qwen" else f"_{TEACHER}"
+SUF = _SUF
+
 # raw release, the five Session*.zip plus Documentation.zip
 IEMOCAP_DATA = DATA_ROOT / "iemocap"
 
@@ -55,9 +64,9 @@ IEMOCAP_MANIFEST = IEMOCAP_DATA / f"manifest{_SUF}.csv"
 # memorises its training split (97.9 UA on data it saw vs 79.6 on unseen
 # speakers), so reusing the si teacher under sd would hand the student
 # near-oracle soft labels on most of sd-train
-IEMOCAP_FEATURES = IEMOCAP_DATA / f"teacher_features{_SUF}"
-IEMOCAP_QLORA = IEMOCAP_DATA / f"teacher_qlora{_SUF}"
-IEMOCAP_PROBE = IEMOCAP_DATA / f"teacher_probe{_SUF}"
+IEMOCAP_FEATURES = IEMOCAP_DATA / f"teacher_features{TSUF}{_SUF}"
+IEMOCAP_QLORA = IEMOCAP_DATA / f"teacher_qlora{TSUF}{_SUF}"
+IEMOCAP_PROBE = IEMOCAP_DATA / f"teacher_probe{TSUF}{_SUF}"
 
 # student caches: log-mel, mfcc, augmented
 IEMOCAP_STUDENT = IEMOCAP_DATA / f"student{_SUF}"

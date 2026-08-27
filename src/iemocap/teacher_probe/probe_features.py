@@ -50,7 +50,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 from common.probe import Probe  # noqa: E402
 from common.training import DEVICE  # noqa: E402
-from iemocap.paths import IEMOCAP_OUTPUTS, IEMOCAP_PROBE, find_adapted_features  # noqa: E402
+from iemocap.paths import IEMOCAP_OUTPUTS, IEMOCAP_PROBE, SUF, TSUF, find_adapted_features  # noqa: E402
 from iemocap.teacher.data import CLASSES  # noqa: E402
 
 ARMS = {"adapted": None}   # resolved at run time. frozen is optional, see --arms
@@ -171,7 +171,8 @@ def main():
 
     df = pd.DataFrame(rows)
     OUT_CSV.mkdir(parents=True, exist_ok=True)
-    df.to_csv(OUT_CSV / "probe_results.csv", index=False)
+    res_csv = OUT_CSV / f"probe_results{TSUF}{SUF}.csv"
+    df.to_csv(res_csv, index=False)
 
     if (df.split == "val").any():          # LOSO has no val
         print("\n=== val UA by arm x feature ===")
@@ -181,7 +182,7 @@ def main():
         print(piv.to_string())
     print("\n=== test UA by arm x feature ===")
     print(df[df.split == "test"].pivot(index="feature", columns="arm", values="ua").to_string())
-    print(f"\nCSV -> {OUT_CSV / 'probe_results.csv'}")
+    print(f"\nCSV -> {res_csv}")
     if not args.no_save:
         print(f"Feature-KD targets -> {OUT_ROOT}")
 

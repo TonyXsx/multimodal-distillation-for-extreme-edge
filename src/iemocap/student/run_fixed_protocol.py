@@ -34,6 +34,12 @@ target are recorded as plain columns and left out of the hash.
 Student embeddings are cached to data/iemocap/student{_sd}/z_cache/, so any
 later question about the readout can be answered without retraining.
 
+IEMOCAP_TEACHER picks whose targets get distilled. Each teacher writes its own
+runs csv, z_cache and stage-2 file, and config_hash deliberately does not cover
+it, so the hubert rows carry the same fingerprint as the qwen ones - the student
+side is identical and the stored CE rows serve both arms. CE never gets re-run
+for a new teacher.
+
 Every method gets scored twice, they aren't comparable otherwise:
 
     head       the model's own classifier. meaningless for feature_only, whose
@@ -45,6 +51,7 @@ Every method gets scored twice, they aren't comparable otherwise:
     IEMOCAP_PROTOCOL=sd python src/iemocap/student/run_fixed_protocol.py \
         --methods feature_kd feature_only
     IEMOCAP_PROTOCOL=sd python src/iemocap/student/run_fixed_protocol.py --summary-only
+    IEMOCAP_PROTOCOL=loso1 IEMOCAP_TEACHER=hubert         python src/iemocap/student/run_fixed_protocol.py --methods logit_kd feature_only_audio
 """
 
 import argparse
@@ -69,7 +76,7 @@ if str(_SRC) not in sys.path:
 from common.augment import spec_augment  # noqa: E402
 from common.models.audio_student import DSResNetSE  # noqa: E402
 from common.losses import kd_feature_loss, kd_logit_loss  # noqa: E402
-from iemocap.paths import PROTOCOL, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
+from iemocap.paths import PROTOCOL, TEACHER, TSUF, IEMOCAP_OUTPUTS, IEMOCAP_STUDENT  # noqa: E402
 from iemocap.student.kd_common import (  # noqa: E402
     BATCH_SIZE, CLASSES, DEVICE, DROPOUT, EPOCHS, FEATURE_TARGETS, LABEL_SMOOTH,
     LR, N_CLASSES, PROJ_DIM, SMALL_KW, WEIGHT_DECAY,
@@ -77,9 +84,9 @@ from iemocap.student.kd_common import (  # noqa: E402
 )
 
 OUT = IEMOCAP_OUTPUTS / "student"
-RUNS_CSV = OUT / "fixed_protocol_runs.csv"
-ZCACHE = IEMOCAP_STUDENT / "z_cache"
-SUMMARY_CSV = OUT / "fixed_protocol_summary.csv"
+RUNS_CSV = OUT / f"fixed_protocol_runs{TSUF}.csv"
+ZCACHE = IEMOCAP_STUDENT / f"z_cache{TSUF}"
+SUMMARY_CSV = OUT / f"fixed_protocol_summary{TSUF}.csv"
 # resolved at run time. the LOSO folds have no val set, so the val_* columns
 # just stay empty on those rows
 SPLITS = available_splits()
@@ -242,7 +249,8 @@ def main():
         summarise()
         return
 
-    print(f"protocol={PROTOCOL.upper()}  epochs={EPOCHS} (fixed)  seeds={args.seeds}")
+    print(f"protocol={PROTOCOL.upper()}  teacher={TEACHER}  epochs={EPOCHS} (fixed)  "
+          f"seeds={args.seeds}")
     Xtr, ytr, ids_tr = load_inputs("train")
     evalsets = {s: load_inputs(s)[:2] for s in SPLITS}
     mu, sd = normalizer(Xtr)
@@ -255,6 +263,9 @@ def main():
     for name in args.methods:
         spec = METHODS[name]
         tgt = spec["target"]
+        if tgt and tgt not in FEATURE_TARGETS:      # hubert has no last_token
+            print(f"  {name}: no {tgt} target under the {TEACHER} teacher, skipping")
+            continue
         feat_key = FEATURE_TARGETS[tgt] if tgt else "none"
         cfg, h = config_fingerprint()
         t_z = teach[f"z_{tgt}"] if tgt else None
@@ -276,7 +287,7 @@ def main():
 
             # lam_* and kd_t are recorded but kept out of config_hash on
             # purpose, see config_fingerprint
-            r = {"method": name, "seed": seed, "lam_ce": spec["ce"],
+            r = {"method": name, "teacher": TEACHER, "seed": seed, "lam_ce": spec["ce"],
                  "lam_logit": spec["logit"], "lam_feature": spec["feat"],
                  "kd_t": spec["T"], "feature_target": feat_key, "config_hash": h, **cfg,
                  "seconds": round(time.time() - t0, 1)}
