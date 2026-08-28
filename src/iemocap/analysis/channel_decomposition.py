@@ -12,8 +12,10 @@ quoted in FINDINGS.md come out of code rather than out of a notebook.
         being compared are smaller than the spread across seeds.
 
     loso_target_vs_student.csv      the target's own k-NN against what the
-        student trained on it scores. This is the only predictor of student
-        accuracy that survived; student-side fidelity does not.
+        student trained on it scores. Within one family of targets the k-NN sets
+        the ceiling and student-side fidelity adds nothing; a label-trained
+        target then falls about two points below that ceiling, so the two are
+        needed together.
 
     python src/iemocap/analysis/channel_decomposition.py
 """
