@@ -128,7 +128,7 @@ with open(config_path, "w", encoding="utf-8") as f:
 train_counts = Counter(train_subset["intent"])
 val_counts   = Counter(val_subset["intent"])
 
-print("\n── Summary ───────────────────────────────────────────────────────────────")
+print("\nSummary")
 print(f"  Train : {len(train_subset)} samples, {len(train_counts)} classes")
 print(f"          per-class counts  min={min(train_counts.values())}  max={max(train_counts.values())}")
 print(f"  Val   : {len(val_subset)} samples, {len(val_counts)} classes")
