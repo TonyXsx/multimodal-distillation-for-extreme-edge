@@ -1,35 +1,45 @@
-# PyTorch (CUDA 12.6 -- RTX 3060 Laptop, Windows)
+# Local Windows env (CUDA 12.6, RTX 3060 Laptop). The teacher stages don't fit on
+# this GPU and run on Linux boxes instead, see src/mintrec/requirements-runpod.txt
+# and src/iemocap/requirements-autodl.txt.
+#
 # Install with:
 #   pip install -r requirements.txt
 --extra-index-url https://download.pytorch.org/whl/cu126
-torch==2.10.0+cu126
-torchvision==0.25.0+cu126
+torch==2.9.1+cu126
+torchvision==0.24.1+cu126
 torchaudio==2.10.0+cu126
 
-# HuggingFace stack
-transformers>=4.47.0
+# HuggingFace stack. Qwen2.5-Omni needs transformers >= 4.52.
+transformers>=4.52.0
 datasets>=3.0.0
 huggingface_hub>=0.27.0
 safetensors>=0.4.0
 accelerate>=1.0.0
 tokenizers>=0.21.0
 
-# Audio processing
+# Teacher adaptation: LoRA/QLoRA adapters and the 4-bit load
+peft>=0.14.0
+bitsandbytes>=0.43.0
+
+# Qwen2.5-Omni preprocessing (process_mm_info), plus the video path for mintrec
+qwen-omni-utils>=0.0.4
+av>=12.0.0
+opencv-python-headless>=4.10.0
+pillow>=10.0.0
+
+# Audio
 soundfile>=0.12.0
 librosa>=0.10.0
-
-# Evaluation / metrics
-evaluate>=0.4.0
-jiwer>=3.0.0
+audioread>=3.0.0          # qwen_omni_utils imports it; librosa 0.11 stopped pulling it in
 
 # Scientific computing
-numpy>=1.26.0,<2.0
+numpy>=1.26.0
 scipy>=1.13.0
+scikit-learn>=1.4.0
 
-# Data / visualisation
+# Data / plots
 pandas>=2.2.0
 matplotlib>=3.9.0
-seaborn>=0.13.0
 tqdm>=4.66.0
 
 # Notebook / dev
