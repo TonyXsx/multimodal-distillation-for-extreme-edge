@@ -148,13 +148,4 @@ file and setup script. Both scripts build a virtual environment on the
 persistent volume and inherit the image's torch instead of reinstalling it.
 Paths are all relative, and `data/` has to be created and downloaded by the user because of privacy issue.
 
-## Limitations
 
-The IEMOCAP teacher has to be adapted separately for every fold, which is why
-the earlier experiments used a single split. One of the five folds has a
-degraded audio representation and is reported both ways where it matters. The
-FSC numbers still use the validation-selected checkpoint that IEMOCAP later
-dropped, so the two are not measured in the same way. MIntRec 2.0 is unfinished
-in the sense that no student of this size gets near a usable accuracy. Only one
-student size was studied, and nothing has been run on real edge hardware, so the
-size figures are estimates from parameter counts rather than measurements.
